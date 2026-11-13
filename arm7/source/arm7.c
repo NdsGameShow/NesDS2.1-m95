@@ -4,6 +4,7 @@
 #include <nds.h>
 #include <dswifi7.h>
 //#include <maxmod7.h>
+#include "arm7.h"
 #include "c_defs.h"
 
 void nesmain();
@@ -30,7 +31,7 @@ static void sys_exit(){
 	bootstub_arm7(); //won't return
 }
 
-extern int APU_paused;
+extern volatile int APU_paused;
 //---------------------------------------------------------------------------------
 int main() {
 //---------------------------------------------------------------------------------
@@ -68,6 +69,7 @@ int main() {
 
 	// Keep the ARM7 mostly idle
 	while (1) {
+		processSoundControl();
 		if ( 0 == (REG_KEYINPUT & (KEY_DOWN | KEY_B | KEY_L | KEY_R))) {
 			sys_exit();
 		}

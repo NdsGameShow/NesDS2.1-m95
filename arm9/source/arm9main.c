@@ -10,6 +10,7 @@
 //frameskip min = 1, max = xxxxxx....
 int palette_value = 0;
 int soft_frameskip = 3;
+volatile int emu_vblank_paused = 0;
 #define PALETTE_VALUE palette_value
 #define SOFT_FRAMESKIP soft_frameskip
 
@@ -28,8 +29,9 @@ void do_romebd()
 void showversion()
 {
 	memset((void *)(SUB_BG),0,64*3);
-	consoletext(0,"Build: " __DATE__ " " __TIME__,0);
-	consoletext(64*2-32,"     nesDS 2.1__________________________________",0);
+	consoletext(0,"nesDS v2.1-m95d",0);
+	consoletext(64,"Build: " __DATE__ " " __TIME__,0);
+	consoletext(64*2,"________________________________",0);
 }
 
 /*****************************
@@ -40,7 +42,12 @@ void showversion()
 ******************************/
 void vblankinterrupt() {
 	debuginfo[VBLS]++;
-	EMU_VBlank();
+	if (emu_vblank_paused) {
+		DMA_CR(0) = 0;
+		DMA_CR(1) = 0;
+	} else {
+		EMU_VBlank();
+	}
 	irqDisable(IRQ_VCOUNT);			//we should disable this...
 }
 

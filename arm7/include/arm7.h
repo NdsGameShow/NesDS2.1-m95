@@ -14,10 +14,11 @@ extern int ipc_region;
 extern void soundinterrupt(void);
 
 extern int pcmpos;
-extern int APU_paused;
+extern volatile int APU_paused;
 
 extern void readAPU(void);
 extern void resetAPU(void);
+extern void processSoundControl(void);
 extern void dealrawpcm(unsigned char *out);
 
 

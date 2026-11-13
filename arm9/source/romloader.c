@@ -12,6 +12,7 @@
 
 extern int subscreen_stat;
 extern int shortcuts_tbl[16];
+extern volatile int emu_vblank_paused;
 
 char tmpname[] = "dszip.tmp";
 
@@ -90,10 +91,14 @@ int global_roms = 0;
 
 void do_rommenu() {
 	int roms = global_roms;
+	int i;
 
 	ips_stat = false;		// disable ips first.
+	emu_vblank_paused = 1;
+	DMA_CR(0) = 0;
+	DMA_CR(1) = 0;
 
-	fifoSendValue32(FIFO_USER_08, FIFO_APU_PAUSE); // disable sound when selecting a rom.
+	(void)Sound_pause();
 
 	if (!global_roms) {
 		roms = init_rommenu();
@@ -106,6 +111,17 @@ void do_rommenu() {
 		} else {						// no DLDI error, no files
 			consoletext(64*3,"No roms found.",0);
 		}
+		if (romfilename[0] != '\0') {
+			for (i = 0; i < 60; i++)
+				swiWaitForVBlank();
+			(void)Sound_resume();
+			menu_stat = 0;
+			menu_draw = 0;
+			hideconsole();
+			clearconsole();
+			emu_vblank_paused = 0;
+			return;
+		}
 		while(1) swiWaitForVBlank();
 	}
 	showconsole();
@@ -116,6 +132,7 @@ void do_rommenu() {
 	menu_draw = 0;
 	hideconsole();
 	clearconsole();
+	emu_vblank_paused = 0;
 }
 
 /*****************************
@@ -264,37 +281,49 @@ int loadrom() {
 	FILE *f; // rom file
 	int i; // romsize
 	char *roms; // rom data
+	char *extension = strrchr(romfilename, '.');
+	int compressed = strstr(romfilename, ".GZ") || strstr(romfilename, ".gz") ||
+		strstr(romfilename, ".ZIP") || strstr(romfilename, ".zip");
+
+	if (extension == NULL)
+		return 0;
 
 	if (strstr(romfilename, ".fds") || strstr(romfilename, ".FDS")) {
 		if ((__emuflags & DISKBIOS) == 0) {
-			return 1;
+			return 0;
 		}
 	}
 
-	if (strstr(romfilename, ".GZ") || strstr(romfilename, ".gz") ||
-		strstr(romfilename, ".ZIP") || strstr(romfilename, ".zip")
-	) {	// a gz file is loaded.
+	if (compressed) {
+		irqDisable(IRQ_VBLANK);
 		if (load_gz(romfilename)) {
-			return 1;	//fail to unzip.
+			unlink(tmpname);
+			irqEnable(IRQ_VBLANK);
+			return 0;
 		}
 		f = fopen(tmpname,"r");
 	}
 	else {
+		irqDisable(IRQ_VBLANK);
 		f = fopen(romfilename,"r");
 	}
+	if (f == NULL) {
+		if (compressed)
+			unlink(tmpname);
+		irqEnable(IRQ_VBLANK);
+		return 0;
+	}
 
-	romfileext = strrchr(romfilename,'.')+1;
+	romfileext = extension + 1;
 	roms = (char *)rom_start;
 	i = fread(roms,1,ROM_MAX_SIZE,f);	//read the whole thing (filesize=some huge number, don't care)
-	do_ips(i);
-
 	fclose(f);
 
-	if (strstr(romfilename, ".GZ") || strstr(romfilename, ".gz") ||
-		strstr(romfilename, ".ZIP") || strstr(romfilename, ".zip")
-		) {    // a gz file is loaded.
+	if (compressed) {
 		unlink(tmpname);
 	}
+	irqEnable(IRQ_VBLANK);
+	do_ips(i);
 	romsize = i;
     if (i < 0x100000)
         i = 0x100000;            // leave some room for FDS files. Also the NSF file need some extra memory
@@ -322,9 +351,17 @@ int loadrom() {
 ******************************/
 int selectrom(int rom) {
 	char **files = (char **)rom_files;
+	int count;
+	size_t filename_len;
 
 	if (*files[rom] == 1) {	// directory
-		chdir(files[rom]+1);
+		if (chdir(files[rom]+1) != 0)
+			return 0;
+		count = init_rommenu();
+		if (count > 0)
+			return count;
+		if (chdir("..") != 0)
+			return 0;
 		return init_rommenu();
 	} else {	// file
 		if (strstr(files[rom]+1, ".ips") || strstr(files[rom]+1, ".IPS")) {	// a ips file is loaded.
@@ -332,7 +369,10 @@ int selectrom(int rom) {
 			return 0;
 		}
 		else {
-			memcpy(romfilename,files[rom]+1,256);
+			filename_len = strlen(files[rom]+1);
+			if (filename_len >= sizeof(romfilename))
+				return 0;
+			memcpy(romfilename,files[rom]+1,filename_len+1);
 
 			return loadrom();
 		}
@@ -349,9 +389,13 @@ int selectrom(int rom) {
 int init_rommenu() {
 	const char **files;
 	char *nextfile;
+	char *names_end;
 	int idx = 0;
-	DIR *dir = NULL;
-	struct dirent *cnt = NULL;
+	int is_parent;
+	int is_directory;
+	size_t name_len;
+	DIR *dir;
+	struct dirent *cnt;
 	struct stat statbuf;
 
 	if (!active_interface) {		// DLDI trouble
@@ -359,35 +403,48 @@ int init_rommenu() {
 	}
 	files = (const char **)rom_files;
 	nextfile = (char *)&files[MAXFILES];
-	dir = opendir(".");			// chdir to root
-	cnt = readdir(dir);
-	stat(cnt->d_name,&statbuf);
+	names_end = nextfile + MAXFILES * 64;
+	irqDisable(IRQ_VBLANK);
+	dir = opendir(".");
+	if (dir == NULL) {
+		irqEnable(IRQ_VBLANK);
+		return 0;
+	}
+	memset(files, 0, MAXFILES * sizeof(*files));
 
-	while (cnt != NULL && (idx < MAXFILES-1) && dir != NULL) {
+	while (idx < MAXFILES-1 && (cnt = readdir(dir)) != NULL) {
+		is_parent = strcmp("..", cnt->d_name) == 0;
+		if (is_parent) {
+			is_directory = 1;
+		} else {
+			if (stat(cnt->d_name, &statbuf) != 0)
+				continue;
+			is_directory = S_ISDIR(statbuf.st_mode);
+		}
 		if (((strstr(cnt->d_name, ".NES") || strstr(cnt->d_name, ".nes"))
 			|| (strstr(cnt->d_name, ".FDS") || strstr(cnt->d_name, ".fds"))
 			|| (strstr(cnt->d_name, ".IPS") || strstr(cnt->d_name, ".ips"))
 			|| (strstr(cnt->d_name, ".GZ") || strstr(cnt->d_name, ".gz"))
 			|| (strstr(cnt->d_name, ".ZIP") || strstr(cnt->d_name, ".zip"))
 			|| (strstr(cnt->d_name, ".nsf") || strstr(cnt->d_name, ".nsf"))
-			|| (S_ISDIR(statbuf.st_mode)) 
-			|| strcmp("..", cnt->d_name) == 0) && strcmp(".", cnt->d_name) != 0) {
-			if (S_ISDIR(statbuf.st_mode) || strcmp("..", cnt->d_name) == 0)
+			|| is_directory) && strcmp(".", cnt->d_name) != 0) {
+			name_len = strlen(cnt->d_name);
+			if (name_len + 2 > (size_t)(names_end - nextfile))
+				break;
+			if (is_directory)
 				*nextfile = 1;
 			else 
 				*nextfile = 2;
-			strcpy(nextfile + 1, cnt->d_name);
+			memcpy(nextfile + 1, cnt->d_name, name_len + 1);
 			files[idx] = nextfile;
-			nextfile += strlen(nextfile)+1;
+			nextfile += name_len + 2;
 			idx++;
 		}
-		cnt = readdir(dir);
-		stat(cnt->d_name,&statbuf);
 	}
+	closedir(dir);
+	irqEnable(IRQ_VBLANK);
 	files[idx] = 0;
 	stringsort(files);
-	if (dir)
-		closedir(dir);
 	return idx;
 }
 

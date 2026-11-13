@@ -14,8 +14,14 @@ s16 buffer[MIXBUFSIZE*20];
 
 void readAPU(void);
 void resetAPU(void);
+void fifointerrupt(u32 msg, void *none);
 
 static int chan = 0;
+static Int32 mixprev[9];
+static void clearSoundBuffers(void);
+static volatile u32 sound_control_pending = 0;
+static volatile u32 sound_ack_pending = 0;
+static volatile int sound_control_handler_ready = 0;
 
 const short logtable[1024] = {
 0,10,17,23,28,33,38,42,47,51,54,58,62,66,69,73,76,79,
@@ -128,7 +134,7 @@ void stopsound() {
 }
 
 int pcmpos = 0;
-int APU_paused=0;
+volatile int APU_paused=0;
 
 Int32 NESAPUSoundSquareRender1();
 Int32 NESAPUSoundSquareRender2();
@@ -149,49 +155,43 @@ void mix(int chan) {
 		int i;
 		s16 *dst = &buffer[chan*MIXBUFSIZE];
 		for(i = 0; i < MIXBUFSIZE; i++) {
-			static Int32 preval = 0;
 			Int32 output = soundconvert(NESAPUSoundSquareRender1(), 6);
-			*dst++ = ((preval + output) / 2);
-			preval = output;
+			*dst++ = ((mixprev[0] + output) / 2);
+			mixprev[0] = output;
 		}
 		dst+=MIXBUFSIZE;
 		for(i = 0; i < MIXBUFSIZE; i++) {
-			static Int32 preval = 0;
 			Int32 output = soundconvert(NESAPUSoundSquareRender2(), 6);
-			*dst++ = ((preval + output) / 2);
-			preval = output;
+			*dst++ = ((mixprev[1] + output) / 2);
+			mixprev[1] = output;
 		}
 		dst+=MIXBUFSIZE;
 		for(i = 0; i < MIXBUFSIZE; i++) {
-			static Int32 preval = 0;
 			Int32 output = soundconvert(NESAPUSoundTriangleRender1(), 7);
-			*dst++ = ((preval + output) / 2);
-			preval = output;
+			*dst++ = ((mixprev[2] + output) / 2);
+			mixprev[2] = output;
 		}
 		dst+=MIXBUFSIZE;
 		for(i = 0; i < MIXBUFSIZE; i++) {
-			static Int32 preval = 0;
 			Int32 output = soundconvert(NESAPUSoundNoiseRender1(), 6);
-			output = ((preval + output) / 2);
+			output = ((mixprev[3] + output) / 2);
 			*dst++ = output;
-			preval = output;
+			mixprev[3] = output;
 		}
 		dst+=MIXBUFSIZE;
 		for(i = 0; i < MIXBUFSIZE; i++) {
-			static Int32 preval = 0;
 			Int32 output = soundconvert(NESAPUSoundDpcmRender1(), 4);
-			output = ((preval + output) / 2);
+			output = ((mixprev[4] + output) / 2);
 			*dst++ = output;
-			preval = output;
+			mixprev[4] = output;
 		}
 		dst+=MIXBUFSIZE;
 		if(mapper == 20 || mapper == 256) {
 			for(i = 0; i < MIXBUFSIZE; i++) {
-				static Int32 preval = 0;
 				Int32 output = soundconvert(FDSSoundRender3(), 0);
-				output = ((preval + output) / 2);
+				output = ((mixprev[5] + output) / 2);
 				*dst++ = output;
-				preval = output;
+				mixprev[5] = output;
 			}
 		} else {
 			dst+=MIXBUFSIZE;
@@ -199,27 +199,24 @@ void mix(int chan) {
 		dst+=MIXBUFSIZE;
 		if(mapper == 24 || mapper == 26 || mapper == 256) {
 			for(i = 0; i < MIXBUFSIZE; i++) {
-				static Int32 preval = 0;
 				Int32 output = VRC6SoundRender1() << 11;
-				output = ((preval + output) / 2);
+				output = ((mixprev[6] + output) / 2);
 				*dst++ = output;
-				preval = output;
+				mixprev[6] = output;
 			}
 			dst+=MIXBUFSIZE;
 			for(i = 0; i < MIXBUFSIZE; i++) {
-				static Int32 preval = 0;
 				Int32 output = VRC6SoundRender2() << 11;
-				output = ((preval + output) / 2);
+				output = ((mixprev[7] + output) / 2);
 				*dst++ = output;
-				preval = output;
+				mixprev[7] = output;
 			}
 			dst+=MIXBUFSIZE;
 			for(i = 0; i < MIXBUFSIZE; i++) {
-				static Int32 preval = 0;
 				Int32 output = VRC6SoundRender3() << 10;
-				output = ((preval + output) / 2);
+				output = ((mixprev[8] + output) / 2);
 				*dst++ = output;
-				preval = output;
+				mixprev[8] = output;
 			}
 		}
 
@@ -278,9 +275,7 @@ void initsound() {
 	SCHANNEL_REPEAT_POINT(10) = 0; 
 	TIMER0_DATA = -0x572;
 	TIMER1_DATA = 0x10000 - MIXBUFSIZE;
-	memset(buffer, 0, sizeof(buffer));
-
-	memset(IPC_PCMDATA, 0, 512);
+	clearSoundBuffers();
 } 
 
 void lidinterrupt(void)
@@ -304,6 +299,19 @@ void soundinterrupt(void)
 static unsigned char pcm_out = 0x3F;
 int pcm_line = 120;
 int pcmprevol = 0x3F;
+
+static void clearSoundBuffers(void)
+{
+	memset(buffer, 0, sizeof(buffer));
+	memset(IPC_PCMDATA, 0, 512);
+	memset(mixprev, 0, sizeof(mixprev));
+	chan = 1;
+	pcmpos = 0;
+	pcm_line = 120;
+	pcmprevol = 0x3F;
+	pcm_out = 0x3F;
+}
+
 void dealrawpcm(unsigned char *out) 
 {
 	unsigned char *in = IPC_PCMDATA;
@@ -344,25 +352,55 @@ void dealrawpcm(unsigned char *out)
 
 void APUSoundWrite(Uint address, Uint value);	//from s_apu.c (skip using read handlers, just write it directly)
 
+static void registerSoundControlHandler(void)
+{
+	if (!sound_control_handler_ready)
+		sound_control_handler_ready =
+			fifoSetValue32Handler(FIFO_USER_08, fifointerrupt, 0);
+}
+
 void fifointerrupt(u32 msg, void *none)					//This should be registered to a fifo channel.
 {
 	switch(msg&0xff) {
 		case FIFO_APU_PAUSE:
-			APU_paused=1;
-			memset(buffer,0,sizeof(buffer));
-			break;
 		case FIFO_UNPAUSE:
-			APU_paused=0;
-			break;
 		case FIFO_APU_RESET:
-			memset(buffer,0,sizeof(buffer));
-			APU_paused=0;
-			resetAPU();
+			APU_paused=1;
+			stopsound();
+			sound_control_pending = msg&0xff;
 			break;
 		case FIFO_SOUND_RESET:
 			lidinterrupt();
 			break;
 	}
+}
+
+void processSoundControl(void)
+{
+	u32 command = sound_control_pending;
+
+	registerSoundControlHandler();
+	if (sound_ack_pending) {
+		if (IPC_APU_STATE == 0)
+			sound_ack_pending = 0;
+		else
+			IPC_APU_STATE = sound_ack_pending;
+	}
+	if (command == 0)
+		return;
+
+	REG_IF = IRQ_TIMER1;
+	readAPU();
+	clearSoundBuffers();
+	if (command == FIFO_APU_RESET)
+		resetAPU();
+	if (command != FIFO_APU_PAUSE) {
+		APU_paused=0;
+		restartsound(1);
+	}
+	sound_control_pending = 0;
+	sound_ack_pending = command;
+	IPC_APU_STATE = command;
 }
 
 void resetAPU() {
@@ -399,6 +437,7 @@ void interrupthandler() {
 }
 
 void nesmain() {
+	registerSoundControlHandler();
 	NESAudioFrequencySet(MIXFREQ);
 	NESTerminate();
 	NESHandlerInitialize();
@@ -414,7 +453,6 @@ void nesmain() {
 	initsound();
 	restartsound(1);
 
-	fifoSetValue32Handler(FIFO_USER_08, fifointerrupt, 0);		//use the last IPC channel to comm..
 	irqSet(IRQ_TIMER1, soundinterrupt);
 	//irqSet(IRQ_LID, lidinterrupt);
 }

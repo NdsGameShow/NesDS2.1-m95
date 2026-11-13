@@ -49,8 +49,42 @@ void writeAPU(u32 val,u32 addr)
 * argument:		none
 * description:		none
 ******************************/
-void Sound_reset() {
-	fifoSendValue32(FIFO_USER_08, FIFO_APU_RESET);
+#define SOUND_CONTROL_RETRIES 200000
+
+static int sound_control_and_wait(u32 command)
+{
+	int retries;
+
+	IPC_APU_STATE = 0;
+	for (retries = 0; retries < SOUND_CONTROL_RETRIES; retries++) {
+		if (fifoSendValue32(FIFO_USER_08, command))
+			break;
+		swiDelay(32);
+	}
+	if (retries == SOUND_CONTROL_RETRIES)
+		return 0;
+
+	for (retries = 0; retries < SOUND_CONTROL_RETRIES; retries++) {
+		if (IPC_APU_STATE == command)
+			return 1;
+		swiDelay(32);
+	}
+	return 0;
+}
+
+int Sound_pause(void)
+{
+	return sound_control_and_wait(FIFO_APU_PAUSE);
+}
+
+int Sound_resume(void)
+{
+	return sound_control_and_wait(FIFO_UNPAUSE);
+}
+
+int Sound_reset(void)
+{
+	return sound_control_and_wait(FIFO_APU_RESET);
 }
 
 int last_x, last_y;	// most recently touched coords
@@ -163,6 +197,7 @@ void load_sram() {
 	//if (!(__cartflags&SRAM)) return;		//some games have bad headers.
 	if (!active_interface) return;
 
+	irqDisable(IRQ_VBLANK);
 	enter_save_context();
 
 	romfileext[0] = 's';
@@ -175,6 +210,7 @@ void load_sram() {
 		fclose(f);
 	}
 	leave_save_context();
+	irqEnable(IRQ_VBLANK);
 }
 
 /*****************************
@@ -189,6 +225,7 @@ void save_sram() {
 	//if (!(__cartflags&SRAM)) return;		//some games have bad headers.
 	if (!active_interface) return;
 
+	irqDisable(IRQ_VBLANK);
 	enter_save_context();
 
 	romfileext[0] = 's';
@@ -202,6 +239,7 @@ void save_sram() {
 		fclose(f);
 	}
 	leave_save_context();
+	irqEnable(IRQ_VBLANK);
 }
 
 /*****************************
