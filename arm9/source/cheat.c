@@ -40,6 +40,12 @@ touchstring cheataddtouch[] = {
 {-1, 0}
 };
 
+void cheat_reset(void)
+{
+	cheatcount = 0;
+	memset(cheatlistdata, 0, sizeof(cheatlistdata));
+}
+
 //load a cheat file.
 void load_cheat(void)
 {
@@ -338,12 +344,17 @@ int cheatlist()
 				case 12:	
 					{
 						int k;
-						for(k = i - 4; k < cheatcount; k++)  {
-							cheatlistdata[k].add = cheatlistdata[k + 1].add;
-							cheatlistdata[k].val = cheatlistdata[k + 1].val;
-							cheatlistdata[k].type = cheatlistdata[k + 1].type;
+						if (cheatcount > 0 && editnum < cheatcount) {
+							for(k = editnum; k < cheatcount - 1; k++)  {
+								cheatlistdata[k].add = cheatlistdata[k + 1].add;
+								cheatlistdata[k].val = cheatlistdata[k + 1].val;
+								cheatlistdata[k].type = cheatlistdata[k + 1].type;
+							}
+							cheatlistdata[cheatcount - 1].add = 0;
+							cheatlistdata[cheatcount - 1].val = 0;
+							cheatlistdata[cheatcount - 1].type = 0;
+							cheatcount--;
 						}
-						cheatcount--;
 						state = 0;
 					}
 					break;

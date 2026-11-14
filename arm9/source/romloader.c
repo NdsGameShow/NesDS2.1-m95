@@ -399,7 +399,7 @@ void rommenu(int roms) {
 
 	oldinput = IPC_KEYS;
 
-	if (roms == 1)
+	if (roms == 1 && *((char **)rom_files)[0] == 2)
 		key = KEY_START;
 	else
 		key = 0x80000000;
@@ -629,6 +629,10 @@ int loadrom() {
         i = 0x100000;            // leave some room for FDS files. Also the NSF file need some extra memory
     freemem_start = ((u32)roms+i+3)&~3;
     freemem_end = (u32)roms+ROM_MAX_SIZE;
+	{
+		extern void cheat_reset(void);
+		cheat_reset();
+	}
 	recorder_reset();
 
 	if (!is_nsf_file(romfilename, roms)) {
@@ -835,6 +839,9 @@ char defaultDisksyspath[] = "/disksys.rom";
 char *findpath(int argc, char **argv, const char *name){
 	int i;
 	size_t name_len = strlen(name);
+	const char *default_dir = (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') ? argv[0] : "/";
+	size_t def_len = strlen(default_dir);
+	int def_needs_slash;
 
 	for (i = 0; i < argc; i++) {
 		size_t path_len;
@@ -855,8 +862,14 @@ char *findpath(int argc, char **argv, const char *name){
 		memcpy(ininame + path_len, name, name_len + 1);
 		if (!access(ininame,0)) return ininame;
 	}
-	// create at root on next save
-	if (name_len + 2 <= sizeof(ininame)) {
+	// create at app directory (argv[0]) on next save
+	def_needs_slash = (def_len > 0 && default_dir[def_len - 1] != '/') ? 1 : 0;
+	if (def_len > 0 && def_len + def_needs_slash + name_len < sizeof(ininame)) {
+		memcpy(ininame, default_dir, def_len);
+		if (def_needs_slash)
+			ininame[def_len++] = '/';
+		memcpy(ininame + def_len, name, name_len + 1);
+	} else if (name_len + 2 <= sizeof(ininame)) {
 		ininame[0] = '/';
 		memcpy(ininame + 1, name, name_len + 1);
 	} else {
@@ -954,14 +967,18 @@ static void load_ini_gesture(int index)
 
 static void load_ini_path(const char *key, const char *default_value, char *buffer, size_t buffer_size)
 {
-	int length = ini_gets("nesDSrev2", key, default_value, buffer, buffer_size, ininame);
+	int length = ini_gets("nesDSrev2", key, "", buffer, buffer_size, ininame);
 
+	if (length <= 0 || (size_t)length >= buffer_size - 1 || buffer[0] == '\0')
+		length = ini_gets("", key, "", buffer, buffer_size, ininame);
 	if (length <= 0 || (size_t)length >= buffer_size - 1 || buffer[0] == '\0')
 		snprintf(buffer, buffer_size, "%s", default_value);
 }
 
 static void set_default_config(void)
 {
+	const char *app_path = NULL;
+	const char *colon = NULL;
 	const char *slash = NULL;
 	size_t directory_length;
 
@@ -985,12 +1002,17 @@ static void set_default_config(void)
 	reset_shortcuts();
 
 	memset(inibuf, 0, sizeof(inibuf));
-	if (argc > 0 && argv != NULL && argv[0] != NULL)
-		slash = strrchr(argv[0], '/');
+	if (argc > 0 && argv != NULL && argv[0] != NULL) {
+		app_path = argv[0];
+		colon = strchr(app_path, ':');
+		if (colon != NULL && colon[1] == '/')
+			app_path = colon + 1;
+		slash = strrchr(app_path, '/');
+	}
 	if (slash != NULL) {
-		directory_length = slash - argv[0] + 1;
+		directory_length = (size_t)(slash - app_path + 1);
 		if (directory_length < sizeof(inibuf))
-			memcpy(inibuf, argv[0], directory_length);
+			memcpy(inibuf, app_path, directory_length);
 	}
 	if (inibuf[0] == '\0')
 		strcpy(inibuf, "/");
@@ -1024,14 +1046,39 @@ static int load_diskbios(const char *path)
 	return loaded;
 }
 
+static void build_dir_filepath(char *dst, size_t dst_size, const char *dir, const char *filename)
+{
+	size_t dir_len;
+	size_t file_len;
+	int needs_slash;
+
+	if (dst == NULL || dst_size == 0)
+		return;
+	dst[0] = '\0';
+	if (dir == NULL || dir[0] == '\0' || filename == NULL)
+		return;
+
+	dir_len = strlen(dir);
+	file_len = strlen(filename);
+	needs_slash = (dir[dir_len - 1] != '/') ? 1 : 0;
+	if (dir_len + needs_slash + file_len >= dst_size)
+		return;
+
+	memcpy(dst, dir, dir_len);
+	if (needs_slash)
+		dst[dir_len++] = '/';
+	memcpy(dst + dir_len, filename, file_len + 1);
+}
+
 int bootext() {
 	char default_start_dir[sizeof(inibuf)];
-	int loaded_bios;
+	char candidate_bios[sizeof(disksyspath)];
+	int loaded_bios = 0;
 	int i;
 
 	set_default_config();
 	memcpy(default_start_dir, inibuf, sizeof(default_start_dir));
-	if (findpath(8,(char *[]){"/","/_dstwoplug/","/ismartplug/","/moonshl2/extlink/","/_iMenu/_ini/","/_plugin_/","/_nds/",inibuf},"nesDS.ini")){
+	if (findpath(8,(char *[]){default_start_dir,"/_nds/","/_dstwoplug/","/ismartplug/","/moonshl2/extlink/","/_iMenu/_ini/","/_plugin_/","/"},"nesDS.ini")){
 		// interrupt 1: read config
 		long value;
 		int render;
@@ -1075,27 +1122,80 @@ int bootext() {
 		memcpy(inibuf, default_start_dir, sizeof(inibuf));
 		i = strlen(inibuf);
 	}
+	while (i > 1 && inibuf[i - 1] == '/') {
+		inibuf[--i] = '\0';
+	}
 	if (i == 0) {
 		strcpy(inibuf, "/");
 		i = 1;
 	}
-	if (inibuf[i - 1] != '/') {
+	if (chdir(inibuf) != 0) {
+		const char *colon = strchr(default_start_dir, ':');
+		int moved = 0;
+
+		if (colon != NULL && inibuf[0] == '/') {
+			size_t drive_len = (size_t)(colon - default_start_dir + 1);
+			char drive_path[sizeof(inibuf)];
+
+			if (drive_len + (size_t)i < sizeof(drive_path)) {
+				memcpy(drive_path, default_start_dir, drive_len);
+				memcpy(drive_path + drive_len, inibuf, (size_t)i + 1);
+				if (chdir(drive_path) == 0) {
+					strcpy(inibuf, drive_path);
+					i = (int)strlen(inibuf);
+					moved = 1;
+				}
+			}
+		}
+		if (!moved) {
+			memcpy(inibuf, default_start_dir, sizeof(inibuf));
+			i = strlen(inibuf);
+			while (i > 1 && inibuf[i - 1] == '/') {
+				inibuf[--i] = '\0';
+			}
+			if (i == 0) {
+				strcpy(inibuf, "/");
+				i = 1;
+			}
+			if (chdir(inibuf) != 0) {
+				strcpy(inibuf, "/");
+				i = 1;
+				if (chdir(inibuf) != 0)
+					return 0;
+			}
+		}
+	}
+	if (i > 1 && (size_t)i < sizeof(inibuf) - 1) {
 		inibuf[i++] = '/';
 		inibuf[i] = '\0';
 	}
-	if (chdir(inibuf) != 0) {
-		memcpy(inibuf, default_start_dir, sizeof(inibuf));
-		if (chdir(inibuf) != 0) {
-			strcpy(inibuf, "/");
-			if (chdir(inibuf) != 0)
-				return 0;
+
+	// 0. If DisksysBios was explicitly customized in nesDS.ini, try it first
+	if (disksyspath[0] != '\0' && strcmp(disksyspath, defaultDisksyspath) != 0) {
+		loaded_bios = load_diskbios(disksyspath);
+	}
+	// 1. Search in nesDS.nds directory (app directory)
+	if (!loaded_bios) {
+		build_dir_filepath(candidate_bios, sizeof(candidate_bios), default_start_dir, "disksys.rom");
+		if (candidate_bios[0] != '\0' && load_diskbios(candidate_bios)) {
+			strcpy(disksyspath, candidate_bios);
+			loaded_bios = 1;
 		}
 	}
-
-	loaded_bios = load_diskbios(disksyspath);
-	if (!loaded_bios && strcmp(disksyspath, defaultDisksyspath) != 0) {
-		strcpy(disksyspath, defaultDisksyspath);
-		loaded_bios = load_diskbios(disksyspath);
+	// 2. Search in ROM directory (StartIn from nesDS.ini)
+	if (!loaded_bios && strcmp(inibuf, default_start_dir) != 0) {
+		build_dir_filepath(candidate_bios, sizeof(candidate_bios), inibuf, "disksys.rom");
+		if (candidate_bios[0] != '\0' && load_diskbios(candidate_bios)) {
+			strcpy(disksyspath, candidate_bios);
+			loaded_bios = 1;
+		}
+	}
+	// 3. Search in root directory (/disksys.rom) last
+	if (!loaded_bios) {
+		if (load_diskbios(defaultDisksyspath)) {
+			strcpy(disksyspath, defaultDisksyspath);
+			loaded_bios = 1;
+		}
 	}
 	if (loaded_bios)
 		__emuflags |= DISKBIOS;
