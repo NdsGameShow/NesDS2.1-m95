@@ -23,13 +23,14 @@ void do_romebd()
 	freemem_start = ((u32)(&__bss_end__) + 3) & ~3;
 	freemem_end = 0x23D8000;
 	initcart(romebd_s);
+	recorder_reset();
 }	
 #endif
 
 void showversion()
 {
 	memset((void *)(SUB_BG),0,64*3);
-	consoletext(0,"nesDS v2.1-m95d",0);
+	consoletext(0,"nesDS v2.1-m95g",0);
 	consoletext(64,"Build: " __DATE__ " " __TIME__,0);
 	consoletext(64*2,"________________________________",0);
 }
@@ -226,9 +227,20 @@ int main(int _argc, char **_argv) {
 		do_menu();	//do control menu.
 	
 		do_multi();
-		if(nifi_stat == 0 || nifi_stat >= 5)
+		if(nifi_stat == 0 || nifi_stat >= 5) {
+			extern void apply_display_settings(void);
+			static int wait_frames = 0;
 			play(); //emulate a frame of the NES game.
-		else 
+			if (REG_MASTER_BRIGHT != 0) {
+				if (++wait_frames >= 5) {
+					wait_frames = 0;
+					apply_display_settings();
+					REG_MASTER_BRIGHT = 0;
+				}
+			} else {
+				wait_frames = 0;
+			}
+		} else 
 			swiWaitForVBlank();
 	}
 }
@@ -244,7 +256,8 @@ int maxsaves;
 * description:	none
 ******************************/
 void recorder_reset() {
-	maxsaves=(freemem_end-freemem_start)/SAVESTATESIZE; //cal the frames that you can save..
+	int free_size = freemem_end - freemem_start;
+	maxsaves = free_size > 0 ? free_size / SAVESTATESIZE : 0;
 	lastsave=0; //2 pointers to use the memory of savestate as a FIFO.
 	firstsave=0;
 }
@@ -307,14 +320,16 @@ void play() {
 			framecount++;
 			if(framecount > 8) {	//save state every 9th frame
 				framecount -= 9;
-				savestate(freemem_start + SAVESTATESIZE * lastsave);
-				lastsave++;
-				if(lastsave >= maxsaves)
-					lastsave = 0;
-				if(lastsave == firstsave) {
-					firstsave++;
-					if(firstsave >= maxsaves)
-						firstsave = 0;
+				if(maxsaves > 0) {
+					savestate(freemem_start + SAVESTATESIZE * lastsave);
+					lastsave++;
+					if(lastsave >= maxsaves)
+						lastsave = 0;
+					if(lastsave == firstsave) {
+						firstsave++;
+						if(firstsave >= maxsaves)
+							firstsave = 0;
+					}
 				}
 			}
 		} else {

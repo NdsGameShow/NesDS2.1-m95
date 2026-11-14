@@ -4,6 +4,8 @@
 #include <dirent.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <ctype.h>
+#include <errno.h>
 #include "c_defs.h"
 #include "minIni.h"
 #include "menu.h"
@@ -11,7 +13,6 @@
 //#include "extlink_filestruct.h"
 
 extern int subscreen_stat;
-extern int shortcuts_tbl[16];
 extern volatile int emu_vblank_paused;
 
 char tmpname[] = "dszip.tmp";
@@ -30,6 +31,24 @@ char *romfileext;	// points to file extension
 //extern u8 autostate;			// from ui.c
 int active_interface = 0;
 
+#define FDS_HEADER_SIZE 16
+#define FDS_SIDE_SIZE 65500
+#define FDS_DIRTY_BUFFER_SIZE 0x40000
+
+enum {
+	ROM_LOAD_ERROR_NONE,
+	ROM_LOAD_ERROR_FDS_BIOS,
+	ROM_LOAD_ERROR_FDS_IMAGE
+};
+
+static int rom_load_error;
+static int diskbios_loaded;
+static int fds_image_loaded;
+static int fds_image_has_header;
+static size_t fds_image_data_size;
+static char fds_image_path[1024];
+extern u8 NES_DISK[];
+
 void rommenu(int roms);
 void drawmenu(int sel, int roms);
 int getinput(void);
@@ -40,10 +59,224 @@ int loadrom();	// return -1 on success
 int selectrom(int rom);	// return -1 on success, or rom count (from directory change)
 void stringsort(const char **s);
 
+static int is_fds_filename(const char *name)
+{
+	const char *extension = strrchr(name, '.');
+	const char *inner_extension = NULL;
+	size_t prefix_length;
+
+	if (extension == NULL)
+		return 0;
+	if (strcmp(extension, ".fds") == 0 || strcmp(extension, ".FDS") == 0)
+		return 1;
+	if (strcmp(extension, ".gz") != 0 && strcmp(extension, ".GZ") != 0 &&
+		strcmp(extension, ".zip") != 0 && strcmp(extension, ".ZIP") != 0)
+		return 0;
+
+	prefix_length = (size_t)(extension - name);
+	while (prefix_length > 0) {
+		if (name[prefix_length - 1] == '.') {
+			inner_extension = name + prefix_length - 1;
+			break;
+		}
+		prefix_length--;
+	}
+	return inner_extension != NULL && extension - inner_extension == 4 &&
+		(strncmp(inner_extension, ".fds", 4) == 0 ||
+		strncmp(inner_extension, ".FDS", 4) == 0);
+}
+
+static int is_direct_fds_filename(const char *name)
+{
+	const char *extension = strrchr(name, '.');
+	return extension != NULL &&
+		(strcmp(extension, ".fds") == 0 || strcmp(extension, ".FDS") == 0);
+}
+
+static int valid_fds_side_count(size_t count)
+{
+	return count >= 1 && count <= 4;
+}
+
+static int valid_raw_fds_size(size_t size)
+{
+	return size == FDS_SIDE_SIZE || size == FDS_SIDE_SIZE * 2 ||
+		size == FDS_SIDE_SIZE * 3 || size == FDS_SIDE_SIZE * 4;
+}
+
+static int validate_fds_stream(FILE *file, int *has_header, size_t *data_size)
+{
+	u8 header[FDS_HEADER_SIZE];
+	u8 signature[3];
+	long image_size;
+	size_t sides;
+
+	if (fseek(file, 0, SEEK_END) != 0)
+		return 0;
+	image_size = ftell(file);
+	if (image_size < 0 || image_size > ROM_MAX_SIZE)
+		return 0;
+	if (valid_raw_fds_size((size_t)image_size)) {
+		if (fseek(file, 0, SEEK_SET) != 0 ||
+			fread(signature, 1, sizeof(signature), file) != sizeof(signature) ||
+			memcmp(signature, "FDS", sizeof(signature)) == 0 ||
+			fseek(file, 0, SEEK_SET) != 0)
+			return 0;
+		*has_header = 0;
+		*data_size = image_size;
+		return 1;
+	}
+	if (image_size < FDS_HEADER_SIZE ||
+		fseek(file, 0, SEEK_SET) != 0 ||
+		fread(header, 1, sizeof(header), file) != sizeof(header) ||
+		memcmp(header, "FDS\x1a", 4) != 0)
+		return 0;
+
+	sides = header[4];
+	if (!valid_fds_side_count(sides) ||
+		(size_t)image_size != FDS_HEADER_SIZE + FDS_SIDE_SIZE * sides)
+		return 0;
+	*has_header = 1;
+	*data_size = FDS_SIDE_SIZE * sides;
+	return fseek(file, 0, SEEK_SET) == 0;
+}
+
+static int validate_fds_image(const u8 *image, size_t image_size,
+	int *has_header, size_t *data_size)
+{
+	size_t sides;
+
+	if (valid_raw_fds_size(image_size)) {
+		if (memcmp(image, "FDS", 3) == 0)
+			return 0;
+		*has_header = 0;
+		*data_size = image_size;
+		return 1;
+	}
+	if (image_size < FDS_HEADER_SIZE ||
+		memcmp(image, "FDS\x1a", 4) != 0)
+		return 0;
+
+	sides = image[4];
+	if (!valid_fds_side_count(sides) ||
+		image_size != FDS_HEADER_SIZE + FDS_SIDE_SIZE * sides)
+		return 0;
+	*has_header = 1;
+	*data_size = FDS_SIDE_SIZE * sides;
+	return 1;
+}
+
+static int stream_has_fds_magic(FILE *file)
+{
+	u8 signature[3];
+	int has_magic;
+
+	if (fseek(file, 0, SEEK_SET) != 0)
+		return 1;
+	if (fread(signature, 1, sizeof(signature), file) != sizeof(signature)) {
+		has_magic = ferror(file) != 0;
+		if (fseek(file, 0, SEEK_SET) != 0)
+			return 1;
+		return has_magic;
+	}
+	has_magic = memcmp(signature, "FDS", sizeof(signature)) == 0;
+	if (fseek(file, 0, SEEK_SET) != 0)
+		return 1;
+	return has_magic;
+}
+
+static int make_fds_image_path(const char *filename, char *path, size_t path_size)
+{
+	char directory[768];
+	int length;
+
+	if (!is_direct_fds_filename(filename) ||
+		getcwd(directory, sizeof(directory)) == NULL)
+		return 0;
+	length = snprintf(path, path_size, "%s/%s", directory, filename);
+	return length >= 0 && (size_t)length < path_size;
+}
+
+static int fds_disk_has_writes(void)
+{
+	return fds_image_data_size <= FDS_DIRTY_BUFFER_SIZE &&
+		memchr(NES_DISK, 0xff, fds_image_data_size) != NULL;
+}
+
+static void clear_fds_session(void)
+{
+	fds_image_loaded = 0;
+	fds_image_has_header = 0;
+	fds_image_data_size = 0;
+	fds_image_path[0] = '\0';
+}
+
+int save_fds(void)
+{
+	const u8 *header;
+	const u8 *data;
+	size_t output_size;
+	size_t bytes_written;
+	size_t side_count;
+	FILE *file;
+	int target_has_header;
+	size_t target_data_size;
+	int write_failed;
+
+	if (!active_interface || !diskbios_loaded || !(__emuflags & DISKBIOS) ||
+		!fds_image_loaded || globals.mapperNr != 20 ||
+		fds_image_path[0] == '\0' || globals.romBase == NULL ||
+		fds_image_data_size == 0 ||
+		fds_image_data_size > FDS_DIRTY_BUFFER_SIZE)
+		return 0;
+
+	header = globals.romBase - FDS_HEADER_SIZE;
+	if (memcmp(header, "FDS\x1a", 4) != 0)
+		return 0;
+	side_count = header[4];
+	if (!valid_fds_side_count(side_count) ||
+		FDS_SIDE_SIZE * side_count != fds_image_data_size ||
+		(globals.prgSize16k >> 2) != side_count ||
+		!fds_disk_has_writes())
+		return 0;
+
+	file = fopen(fds_image_path, "rb");
+	if (file == NULL)
+		return -1;
+	write_failed = !validate_fds_stream(file, &target_has_header, &target_data_size) ||
+		target_has_header != fds_image_has_header ||
+		target_data_size != fds_image_data_size;
+	if (fclose(file) != 0)
+		write_failed = 1;
+	if (write_failed)
+		return -1;
+
+	if (fds_image_has_header) {
+		data = header;
+		output_size = FDS_HEADER_SIZE + fds_image_data_size;
+	} else {
+		data = globals.romBase;
+		output_size = fds_image_data_size;
+	}
+
+	file = fopen(fds_image_path, "wb");
+	if (file == NULL)
+		return -1;
+	bytes_written = fwrite(data, 1, output_size, file);
+	write_failed = bytes_written != output_size || fflush(file) != 0;
+	if (fclose(file) != 0)
+		write_failed = 1;
+	if (write_failed)
+		return -1;
+
+	memset(NES_DISK, 0, FDS_DIRTY_BUFFER_SIZE);
+	return 1;
+}
+
 char *adjust_fds(const char *name, char *rom, int romSize)
 {
 	char *newPtr = rom;
-	if (strstr(name, ".FDS") || strstr(name, ".fds")) {
+	if (is_fds_filename(name)) {
 		int discCount = 0;
 		if (romSize == 65500) {
 			discCount = 1;
@@ -51,14 +284,16 @@ char *adjust_fds(const char *name, char *rom, int romSize)
 		else if (romSize == 65500 * 2) {
 			discCount = 2;
 		}
+		else if (romSize == 65500 * 3) {
+			discCount = 3;
+		}
 		else if (romSize == 65500 * 4) {
 			discCount = 4;
 		}
 		if (discCount != 0) {
 			newPtr -= 16;
-			newPtr[0] = 'F';
-			newPtr[1] = 'D';
-			newPtr[2] = 'S';
+			memset(newPtr, 0, FDS_HEADER_SIZE);
+			memcpy(newPtr, "FDS\x1a", 4);
 			newPtr[4] = discCount;
 		}
 	}
@@ -98,6 +333,10 @@ void do_rommenu() {
 	DMA_CR(0) = 0;
 	DMA_CR(1) = 0;
 
+	BG_PALETTE[0] = 0;
+	videoSetMode(MODE_0_2D);
+	REG_MASTER_BRIGHT = (2 << 14) | 16;
+
 	(void)Sound_pause();
 
 	if (!global_roms) {
@@ -111,9 +350,15 @@ void do_rommenu() {
 		} else {						// no DLDI error, no files
 			consoletext(64*3,"No roms found.",0);
 		}
+		if (rom_load_error != ROM_LOAD_ERROR_NONE) {
+			consoletext(64*4, rom_load_error == ROM_LOAD_ERROR_FDS_BIOS ?
+				"disksys.rom not found" : "Invalid FDS image", 0x1000);
+			rom_load_error = ROM_LOAD_ERROR_NONE;
+		}
 		if (romfilename[0] != '\0') {
 			for (i = 0; i < 60; i++)
 				swiWaitForVBlank();
+			apply_display_settings();
 			(void)Sound_resume();
 			menu_stat = 0;
 			menu_draw = 0;
@@ -134,6 +379,8 @@ void do_rommenu() {
 	clearconsole();
 	emu_vblank_paused = 0;
 }
+
+
 
 /*****************************
 * name:			rommenu
@@ -186,8 +433,14 @@ void rommenu(int roms) {
 				break;
 		}
 		sel %= roms;
-		if (key && loaded >= 0)
+		if (key && loaded >= 0) {
 			drawmenu(sel,roms);
+			if (rom_load_error != ROM_LOAD_ERROR_NONE) {
+				consoletext(0, rom_load_error == ROM_LOAD_ERROR_FDS_BIOS ?
+					"disksys.rom not found" : "Invalid FDS image", 0x1000);
+				rom_load_error = ROM_LOAD_ERROR_NONE;
+			}
+		}
 		key = getinput();
 	} while (loaded >= 0);
 
@@ -282,14 +535,20 @@ int loadrom() {
 	int i; // romsize
 	char *roms; // rom data
 	char *extension = strrchr(romfilename, '.');
+	int fds_file = is_fds_filename(romfilename);
+	int fds_has_header = 0;
+	size_t fds_data_size = 0;
+	size_t fds_file_size = 0;
 	int compressed = strstr(romfilename, ".GZ") || strstr(romfilename, ".gz") ||
 		strstr(romfilename, ".ZIP") || strstr(romfilename, ".zip");
 
+	rom_load_error = ROM_LOAD_ERROR_NONE;
 	if (extension == NULL)
 		return 0;
 
-	if (strstr(romfilename, ".fds") || strstr(romfilename, ".FDS")) {
-		if ((__emuflags & DISKBIOS) == 0) {
+	if (fds_file) {
+		if (!diskbios_loaded || (__emuflags & DISKBIOS) == 0) {
+			rom_load_error = ROM_LOAD_ERROR_FDS_BIOS;
 			return 0;
 		}
 	}
@@ -301,11 +560,11 @@ int loadrom() {
 			irqEnable(IRQ_VBLANK);
 			return 0;
 		}
-		f = fopen(tmpname,"r");
+		f = fopen(tmpname,"rb");
 	}
 	else {
 		irqDisable(IRQ_VBLANK);
-		f = fopen(romfilename,"r");
+		f = fopen(romfilename,"rb");
 	}
 	if (f == NULL) {
 		if (compressed)
@@ -314,9 +573,45 @@ int loadrom() {
 		return 0;
 	}
 
+	if (!fds_file && stream_has_fds_magic(f))
+		fds_file = 1;
+	if (fds_file && (!diskbios_loaded || (__emuflags & DISKBIOS) == 0)) {
+		fclose(f);
+		if (compressed)
+			unlink(tmpname);
+		irqEnable(IRQ_VBLANK);
+		rom_load_error = ROM_LOAD_ERROR_FDS_BIOS;
+		return 0;
+	}
+	if (fds_file && !validate_fds_stream(f, &fds_has_header, &fds_data_size)) {
+		fclose(f);
+		if (compressed)
+			unlink(tmpname);
+		irqEnable(IRQ_VBLANK);
+		rom_load_error = ROM_LOAD_ERROR_FDS_IMAGE;
+		return 0;
+	}
+
 	romfileext = extension + 1;
 	roms = (char *)rom_start;
-	i = fread(roms,1,ROM_MAX_SIZE,f);	//read the whole thing (filesize=some huge number, don't care)
+	clear_fds_session();
+	if (fds_file) {
+		size_t bytes_read;
+
+		fds_file_size = fds_data_size + (fds_has_header ? FDS_HEADER_SIZE : 0);
+		bytes_read = fread(roms, 1, fds_file_size, f);
+		i = (int)bytes_read;
+		if (bytes_read != fds_file_size) {
+			fclose(f);
+			if (compressed)
+				unlink(tmpname);
+			irqEnable(IRQ_VBLANK);
+			rom_load_error = ROM_LOAD_ERROR_FDS_IMAGE;
+			return 0;
+		}
+	} else {
+		i = fread(roms,1,ROM_MAX_SIZE,f);	//read the whole thing (filesize=some huge number, don't care)
+	}
 	fclose(f);
 
 	if (compressed) {
@@ -324,18 +619,39 @@ int loadrom() {
 	}
 	irqEnable(IRQ_VBLANK);
 	do_ips(i);
+	if (fds_file && !validate_fds_image((u8 *)roms, (size_t)i,
+		&fds_has_header, &fds_data_size)) {
+		rom_load_error = ROM_LOAD_ERROR_FDS_IMAGE;
+		return 0;
+	}
 	romsize = i;
     if (i < 0x100000)
         i = 0x100000;            // leave some room for FDS files. Also the NSF file need some extra memory
     freemem_start = ((u32)roms+i+3)&~3;
     freemem_end = (u32)roms+ROM_MAX_SIZE;
+	recorder_reset();
 
 	if (!is_nsf_file(romfilename, roms)) {
 		roms = adjust_fds(romfilename, roms, romsize);
 		romcorrect(roms);
 	}
+	if (fds_file)
+		memset(NES_DISK, 0, FDS_DIRTY_BUFFER_SIZE);
 	initcart(roms);
 	IPC_MAPPER = globals.mapperNr;
+	if (fds_file && globals.mapperNr == 20) {
+		fds_image_loaded = 1;
+		fds_image_has_header = fds_has_header;
+		fds_image_data_size = fds_data_size;
+		if (!make_fds_image_path(romfilename, fds_image_path, sizeof(fds_image_path)))
+			fds_image_path[0] = '\0';
+	} else {
+		clear_fds_session();
+		if (fds_file) {
+			rom_load_error = ROM_LOAD_ERROR_FDS_IMAGE;
+			return 0;
+		}
+	}
 
 	load_sram();
 	//if (autostate) loadstate(..);
@@ -351,7 +667,11 @@ int loadrom() {
 ******************************/
 int selectrom(int rom) {
 	char **files = (char **)rom_files;
+	char old_filename[sizeof(romfilename)];
+	const char *old_extension;
+	int old_extension_offset = -1;
 	int count;
+	int result;
 	size_t filename_len;
 
 	if (*files[rom] == 1) {	// directory
@@ -372,9 +692,19 @@ int selectrom(int rom) {
 			filename_len = strlen(files[rom]+1);
 			if (filename_len >= sizeof(romfilename))
 				return 0;
+			memcpy(old_filename, romfilename, sizeof(old_filename));
+			old_extension = strrchr(romfilename, '.');
+			if (old_extension != NULL)
+				old_extension_offset = (int)(old_extension - romfilename) + 1;
 			memcpy(romfilename,files[rom]+1,filename_len+1);
 
-			return loadrom();
+			result = loadrom();
+			if (result != -1) {
+				memcpy(romfilename, old_filename, sizeof(romfilename));
+				romfileext = old_extension_offset >= 0 ?
+					romfilename + old_extension_offset : NULL;
+			}
+			return result;
 		}
 	}
 }
@@ -503,20 +833,37 @@ char ininame[768];
 char defaultDisksyspath[] = "/disksys.rom";
 
 char *findpath(int argc, char **argv, const char *name){
-	int i = 0;
-	for (;i<argc;i++){
-		strcpy(ininame,argv[i]);
-		if (ininame[strlen(ininame)-1] != '/') strcat(ininame,"/");
-		strcat(ininame,name);
+	int i;
+	size_t name_len = strlen(name);
+
+	for (i = 0; i < argc; i++) {
+		size_t path_len;
+		int needs_slash;
+
+		if (argv[i] == NULL)
+			continue;
+		path_len = strlen(argv[i]);
+		if (path_len == 0 || path_len >= sizeof(ininame))
+			continue;
+		needs_slash = argv[i][path_len - 1] != '/';
+		if (path_len + needs_slash + name_len >= sizeof(ininame))
+			continue;
+
+		memcpy(ininame, argv[i], path_len);
+		if (needs_slash)
+			ininame[path_len++] = '/';
+		memcpy(ininame + path_len, name, name_len + 1);
 		if (!access(ininame,0)) return ininame;
 	}
 	// create at root on next save
-	ininame[0] = '/';
-	strcpy(&ininame[0]+1,name);
+	if (name_len + 2 <= sizeof(ininame)) {
+		ininame[0] = '/';
+		memcpy(ininame + 1, name, name_len + 1);
+	} else {
+		ininame[0] = '\0';
+	}
 	return NULL;
 }
-
-char none[] = " ";
 
 int keystr2int(const char *buf)
 {
@@ -531,86 +878,235 @@ int keystr2int(const char *buf)
 	return ret;
 }
 
-int bootext() {
-	// interrupt 0: set my dir (inibuf)
-	int i;
-	strcpy(inibuf,"/");
-	if (argc > 0){
-		strcpy(inibuf,argv[0]);
-		i = strlen(inibuf)+1;
-		for (;i>0;i--) if (inibuf[i-1] == '/') {inibuf[i] = 0;break;}
+static long get_ini_long(const char *key, long default_value, long min_value, long max_value)
+{
+	char text[64];
+	char *start;
+	char *end;
+	long value;
+	int length = ini_gets("nesDSrev2", key, "", text, sizeof(text), ininame);
+
+	if (length <= 0 || (size_t)length >= sizeof(text) - 1)
+		return default_value;
+
+	start = text;
+	while (isspace((unsigned char)*start))
+		start++;
+	if (*start == '\0')
+		return default_value;
+
+	errno = 0;
+	value = strtol(start, &end, 10);
+	if (end == start || errno == ERANGE)
+		return default_value;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end != '\0' || value < min_value || value > max_value)
+		return default_value;
+	return value;
+}
+
+static int get_ini_shortcut(int index)
+{
+	char text[512];
+	char *start;
+	char *end;
+	long value;
+	int length = ini_gets("nesDSrev2", ishortcuts[index], "", text, sizeof(text), ininame);
+
+	if (length <= 0 || (size_t)length >= sizeof(text) - 1)
+		return shortcuts_tbl[index];
+
+	start = text;
+	while (isspace((unsigned char)*start))
+		start++;
+	errno = 0;
+	value = strtol(start, &end, 10);
+	if (end != start) {
+		while (isspace((unsigned char)*end))
+			end++;
+		if (*end == '\0') {
+			if (errno == 0 && value >= 0 && value <= 0xfff)
+				return value;
+			return shortcuts_tbl[index];
+		}
 	}
 
-	memset(shortcuts_tbl, 0, sizeof(shortcuts_tbl));
+	value = keystr2int(text);
+	return value != 0 ? (int)value & 0xfff : shortcuts_tbl[index];
+}
+
+static void load_ini_gesture(int index)
+{
+	char text[32];
+	int length;
+	int i;
+
+	length = ini_gets("nesDSrev2", igestures[index], "", text, sizeof(text), ininame);
+	if (length <= 0 || length > 16 || (size_t)length >= sizeof(text) - 1)
+		return;
+	for (i = 0; i < length; i++) {
+		if (text[i] != 'U' && text[i] != 'D' && text[i] != 'L' && text[i] != 'R')
+			return;
+	}
+	memcpy(gestures_tbl[index], text, length + 1);
+}
+
+static void load_ini_path(const char *key, const char *default_value, char *buffer, size_t buffer_size)
+{
+	int length = ini_gets("nesDSrev2", key, default_value, buffer, buffer_size, ininame);
+
+	if (length <= 0 || (size_t)length >= buffer_size - 1 || buffer[0] == '\0')
+		snprintf(buffer, buffer_size, "%s", default_value);
+}
+
+static void set_default_config(void)
+{
+	const char *slash = NULL;
+	size_t directory_length;
+
+	rom_load_error = ROM_LOAD_ERROR_NONE;
+	diskbios_loaded = 0;
+	clear_fds_session();
+	__emuflags = NOFLICKER;
+	joyflags &= ~(B_A_SWAP | L_R_DISABLE | AUTOFIRE);
+
+	ad_scale = DEFAULT_SCREEN_SCALE;
+	ad_ypos = DEFAULT_SCREEN_OFFSET;
+	soft_frameskip = 3;
+	autofire_fps = 2;
+	gammavalue = 0;
+	palette_value = 0;
+	slots_num = 0;
+	screen_swap = 0;
+	use_saves_dir = false;
+	__af_state = 0;
+	__af_start = ((autofire_fps >> 1) << 8) + (autofire_fps >> 1) + (autofire_fps & 1);
+	reset_shortcuts();
+
+	memset(inibuf, 0, sizeof(inibuf));
+	if (argc > 0 && argv != NULL && argv[0] != NULL)
+		slash = strrchr(argv[0], '/');
+	if (slash != NULL) {
+		directory_length = slash - argv[0] + 1;
+		if (directory_length < sizeof(inibuf))
+			memcpy(inibuf, argv[0], directory_length);
+	}
+	if (inibuf[0] == '\0')
+		strcpy(inibuf, "/");
+
+	strcpy(disksyspath, defaultDisksyspath);
+	ininame[0] = '\0';
+	memset(diskbios, 0, sizeof(diskbios));
+}
+
+static int load_diskbios(const char *path)
+{
+	FILE *bios = fopen(path, "rb");
+	int loaded = 0;
+	long bios_size;
+
+	if (bios == NULL) {
+		diskbios_loaded = 0;
+		return 0;
+	}
+	if (fseek(bios, 0, SEEK_END) == 0) {
+		bios_size = ftell(bios);
+		if (bios_size == (long)sizeof(diskbios) &&
+			fseek(bios, 0, SEEK_SET) == 0 &&
+			fread(diskbios, 1, sizeof(diskbios), bios) == sizeof(diskbios))
+			loaded = 1;
+	}
+	fclose(bios);
+	if (!loaded)
+		memset(diskbios, 0, sizeof(diskbios));
+	diskbios_loaded = loaded;
+	return loaded;
+}
+
+int bootext() {
+	char default_start_dir[sizeof(inibuf)];
+	int loaded_bios;
+	int i;
+
+	set_default_config();
+	memcpy(default_start_dir, inibuf, sizeof(default_start_dir));
 	if (findpath(8,(char *[]){"/","/_dstwoplug/","/ismartplug/","/moonshl2/extlink/","/_iMenu/_ini/","/_plugin_/","/_nds/",inibuf},"nesDS.ini")){
 		// interrupt 1: read config
-		int iniret;
-		if ((iniret = ini_getl("nesDSrev2","BASwap",0,ininame)) != 0) joyflags |= B_A_SWAP;
+		long value;
+		int render;
 
-		if ((iniret = ini_getl("nesDSrev2","LRDisable",0,ininame)) != 0) joyflags |= L_R_DISABLE;
-		if ((iniret = ini_getl("nesDSrev2","Blend",0,ininame)) != 0) __emuflags |= iniret&3;
-		if ((iniret = ini_getl("nesDSrev2","PALTiming",0,ininame)) != 0) __emuflags |= PALTIMING;
-		if ((iniret = ini_getl("nesDSrev2","FollowMem",0,ininame)) != 0) __emuflags |= FOLLOWMEM;
-		if ((iniret = ini_getl("nesDSrev2","ScreenSwap",0,ininame)) != 0) __emuflags |= SCREENSWAP;
-		if ((iniret = ini_getl("nesDSrev2","AllPixelOn",0,ininame)) != 0) __emuflags |= ALLPIXELON;
-		if ((iniret = ini_getl("nesDSrev2","Render",0,ininame)) != 0)  {
-			if (iniret == 1) __emuflags |= SPLINE;
-			else __emuflags |= SOFTRENDER;
-		}
-		if ((iniret = ini_getl("nesDSrev2","AutoSRAM",0,ininame)) != 0) __emuflags |= AUTOSRAM;
-		if ((iniret = ini_getl("nesDSrev2","Screen_Scale",0,ininame)) != 0) ad_scale = iniret;
-		if ((iniret = ini_getl("nesDSrev2","Screen_Offset",0,ininame)) != 0) ad_ypos = iniret;
-		if ((iniret = ini_getl("nesDSrev2","Screen_Gamma",0,ininame)) != 0) gammavalue = iniret;
-		if ((iniret = ini_getl("nesDSrev2","Screen_Palette",0,ininame)) != 0) palette_value = iniret;
-		palset();
-		if ((iniret = ini_getl("nesDSrev2","AutoFire",2,ininame)) != 0) autofire_fps = iniret;
-		if ((iniret = ini_getl("nesDSrev2","UseSavesDir",0,ininame)) != 0) use_saves_dir = true;
-		__af_start = ((autofire_fps >> 1) << 8) + (autofire_fps >> 1) + (autofire_fps & 1);
-
-		rescale(ad_scale, ad_ypos);
+		if (get_ini_long("BASwap", 0, 0, 1)) joyflags |= B_A_SWAP;
+		if (get_ini_long("LRDisable", 0, 0, 1)) joyflags |= L_R_DISABLE;
+		value = get_ini_long("Blend", NOFLICKER, 0, 3);
+		if (value != 2)
+			__emuflags = (__emuflags & ~3) | value;
+		if (get_ini_long("PALTiming", 0, 0, 1)) __emuflags |= PALTIMING;
+		if (get_ini_long("FollowMem", 0, 0, 1)) __emuflags |= FOLLOWMEM;
+		if (get_ini_long("ScreenSwap", 0, 0, 1)) __emuflags |= SCREENSWAP;
+		if (get_ini_long("AllPixelOn", 0, 0, 1)) __emuflags |= ALLPIXELON;
+		render = get_ini_long("Render", 0, 0, 2);
+		__emuflags &= ~(SPLINE | SOFTRENDER);
+		if (render == 1) __emuflags |= SPLINE;
+		else if (render == 2) __emuflags |= SOFTRENDER;
+		if (get_ini_long("AutoSRAM", 0, 0, 1)) __emuflags |= AUTOSRAM;
+		ad_scale = get_ini_long("Screen_Scale", DEFAULT_SCREEN_SCALE,
+			MIN_SCREEN_SCALE, MAX_SCREEN_SCALE);
+		ad_ypos = get_ini_long("Screen_Offset", DEFAULT_SCREEN_OFFSET,
+			-MAX_SCREEN_OFFSET, MAX_SCREEN_OFFSET);
+		gammavalue = get_ini_long("Screen_Gamma", 0, 0, 4);
+		palette_value = get_ini_long("Screen_Palette", 0, 0, 13);
+		autofire_fps = get_ini_long("AutoFire", 2, 2, 30);
+		use_saves_dir = get_ini_long("UseSavesDir", 0, 0, 1) != 0;
 
 		for (i = 0 ; i < MAX_SC; i++) {
-			if ((iniret = ini_getl("nesDSrev2",ishortcuts[i],0,ininame)) != 0) shortcuts_tbl[i] = iniret;
-			else {
-				ini_gets("nesDSrev2", ishortcuts[i], none, inibuf, 512, ininame);
-				shortcuts_tbl[i] = keystr2int(inibuf);
-			}
-
-			ini_gets("nesDSrev2", igestures[i], none, gestures_tbl[i], 24, ininame);
+			shortcuts_tbl[i] = get_ini_shortcut(i);
+			load_ini_gesture(i);
 		}
-
-		ini_gets("nesDSrev2","StartIn","/",inibuf,768,ininame);
-		ini_gets("nesDSrev2","DisksysBios",defaultDisksyspath,disksyspath,768,ininame);
+		load_ini_path("StartIn", default_start_dir, inibuf, sizeof(inibuf));
+		load_ini_path("DisksysBios", defaultDisksyspath, disksyspath, sizeof(disksyspath));
 	}
-	/*else{
-		strcpy(inibuf,"/");
-	}*/
+	palset();
+	__af_start = ((autofire_fps >> 1) << 8) + (autofire_fps >> 1) + (autofire_fps & 1);
+	apply_display_settings();
 
-	if (!*inibuf||inibuf[strlen(inibuf)-1] != '/') strcat(inibuf,"/");
-	chdir(inibuf); // might be overwritten in readFrontend()
+	i = strlen(inibuf);
+	if (i == 0 || (size_t)i >= sizeof(inibuf) - 1) {
+		memcpy(inibuf, default_start_dir, sizeof(inibuf));
+		i = strlen(inibuf);
+	}
+	if (i == 0) {
+		strcpy(inibuf, "/");
+		i = 1;
+	}
+	if (inibuf[i - 1] != '/') {
+		inibuf[i++] = '/';
+		inibuf[i] = '\0';
+	}
+	if (chdir(inibuf) != 0) {
+		memcpy(inibuf, default_start_dir, sizeof(inibuf));
+		if (chdir(inibuf) != 0) {
+			strcpy(inibuf, "/");
+			if (chdir(inibuf) != 0)
+				return 0;
+		}
+	}
 
-	// if we didn't have an ini, this'll be blank
-	if (disksyspath[0] == 0) {
+	loaded_bios = load_diskbios(disksyspath);
+	if (!loaded_bios && strcmp(disksyspath, defaultDisksyspath) != 0) {
 		strcpy(disksyspath, defaultDisksyspath);
+		loaded_bios = load_diskbios(disksyspath);
 	}
-	FILE *bios = fopen(disksyspath, "r");
-	if (bios != NULL) {
-		fseek(bios, 0, SEEK_END);
-		size_t offset = ftell(bios);
-		if (offset < 8193) { // FDS BIOS should be 8KB, we'll accept anything that fits in our buffer
-			fseek(bios, 0, SEEK_SET);
-			fread(diskbios, 8192, 1, bios);
-
-			__emuflags |= DISKBIOS;
-		}
-		fclose(bios);
-	}
+	if (loaded_bios)
+		__emuflags |= DISKBIOS;
 
 	// interrupt 2: read frontend
-	if (!readFrontend(romfilename)) return 0;
+	if (!readFrontend(romfilename, sizeof(romfilename))) return 0;
 
 	// interrupt 3: load rom
 	if (loadrom() == -1) return 1;
+	romfilename[0] = '\0';
+	romfileext = NULL;
 	return 0;
 }
 

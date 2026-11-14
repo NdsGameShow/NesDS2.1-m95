@@ -249,6 +249,8 @@ void save_sram() {
 * description:		none
 ******************************/
 void write_savestate(int num) {
+	extern int Sound_pause(void);
+	extern int Sound_resume(void);
 	FILE *f;
 	u8 *p = (u8*)freemem_start;
 
@@ -257,6 +259,7 @@ void write_savestate(int num) {
 	if (num > 9 || num < 0)
 		return;
 
+	(void)Sound_pause();
 	enter_save_context();
 
 	romfileext = strrchr(romfilename,'.')+1;
@@ -272,6 +275,7 @@ void write_savestate(int num) {
 		recorder_reset();
 	}
 	leave_save_context();
+	(void)Sound_resume();
 }
 
 /*****************************
@@ -281,6 +285,9 @@ void write_savestate(int num) {
 * description:		none
 ******************************/
 void read_savestate(int num) {
+	extern int Sound_pause(void);
+	extern int Sound_resume(void);
+	extern int Sound_reset(void);
 	FILE *f;
 	int i;
 	u8 *p = (u8*)freemem_start;
@@ -290,6 +297,7 @@ void read_savestate(int num) {
 	if (num > 9 || num < 0)
 		return;
 
+	(void)Sound_pause();
 	enter_save_context();
 
 	romfileext = strrchr(romfilename,'.')+1;		//make sure everything is ok...
@@ -306,7 +314,10 @@ void read_savestate(int num) {
 		recorder_reset();
 	}
 	leave_save_context();
+	(void)Sound_reset();
+	(void)Sound_resume();
 }
+
 
 
 /*****************************
@@ -318,12 +329,23 @@ void read_savestate(int num) {
 extern int ad_scale, ad_ypos;
 extern int subscreen_stat;
 int screen_swap = 0;
-int shortcuts_tbl[32] = {0,0,0,0,0,0,0,0,0,0,0, KEY_R|KEY_UP, KEY_R|KEY_LEFT, KEY_R|KEY_DOWN, KEY_R|KEY_RIGHT};
-char gestures_tbl[32][32];
+int shortcuts_tbl[MAX_SC];
+char gestures_tbl[MAX_SC][32];
 int time_tbl[32] = {120, 120, 0, 120, 120, 0, 0, 0, 0, 120, 120, 120, 120, 120, 120, 120, 60, 0, 0};
 int container_tbl[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1};
 
 int do_gesture_type = -1;
+
+void reset_shortcuts(void)
+{
+	memset(shortcuts_tbl, 0, sizeof(shortcuts_tbl));
+	shortcuts_tbl[11] = KEY_R | KEY_UP;
+	shortcuts_tbl[12] = KEY_R | KEY_LEFT;
+	shortcuts_tbl[13] = KEY_R | KEY_DOWN;
+	shortcuts_tbl[14] = KEY_R | KEY_RIGHT;
+	memset(gestures_tbl, 0, sizeof(gestures_tbl));
+}
+
 void do_shortcuts()
 {
 	static int count = 0;
@@ -390,15 +412,25 @@ void do_quickf(int func)
 		rescale(ad_scale,ad_ypos);
 		break;
 	case 9:
-		__emuflags ^= SPLINE;
+		{
+			int type = (((__emuflags >> 6) & 3) + 1) % 3;
+			__emuflags = (__emuflags & ~(3 << 6)) | (type << 6);
+			apply_display_settings();
+		}
 		menu_stat = 1;
 		menu_draw = 0;
 		break;
 	case 10:
 		{
-			int tmp;
-			tmp = (__emuflags+1)&3;
-			__emuflags = (__emuflags&~3)|tmp;
+			int blend = __emuflags & 3;
+			if (blend == 0)
+				blend = 1;
+			else if (blend == 1)
+				blend = 3;
+			else
+				blend = 0;
+			__emuflags = (__emuflags & ~3) | blend;
+			apply_display_settings();
 			menu_stat = 1;
 			menu_draw = 0;
 		}
@@ -526,6 +558,17 @@ const char *keystrs[] = {
 
 void rescale(int a, int b)
 {
+	if (a < MIN_SCREEN_SCALE)
+		a = MIN_SCREEN_SCALE;
+	else if (a > MAX_SCREEN_SCALE)
+		a = MAX_SCREEN_SCALE;
+	if (b < -MAX_SCREEN_OFFSET)
+		b = -MAX_SCREEN_OFFSET;
+	else if (b > MAX_SCREEN_OFFSET)
+		b = MAX_SCREEN_OFFSET;
+	ad_scale = a;
+	ad_ypos = b;
+
 	if (b >= 0)
 		REG_BG3Y = -(b >> 8);
 	else

@@ -131,19 +131,25 @@ int ini_putl(const char *Section, const char *Key, long Value, const char *Filen
 int ini_gets(const char *Section, const char *Key, const char *DefValue, char *Buffer, int BufferSize, const char *Filename);
 
 //romloader_frontend.c
-bool readFrontend(char *target);
+bool readFrontend(char *target, int target_size);
 
 
 //misc.c
 #define MAX_SC 19
+#define DEFAULT_SCREEN_SCALE 0xe000
+#define DEFAULT_SCREEN_OFFSET (-0x00060000)
+#define MIN_SCREEN_SCALE 0x100
+#define MAX_SCREEN_SCALE 0x1ff00
+#define MAX_SCREEN_OFFSET (240 * 0x10000)
 
 extern const char *ishortcuts[];
 extern const char *igestures[];
 extern const char *hshortcuts[];
-extern int shortcuts_tbl[];
+extern int shortcuts_tbl[MAX_SC];
 extern const char *keystrs[];
-extern char gestures_tbl[][32];
+extern char gestures_tbl[MAX_SC][32];
 extern int do_gesture_type;
+void reset_shortcuts(void);
 void do_quickf(int func);
 
 extern int slots_num;

@@ -352,6 +352,49 @@ void menu_display_start(void)
 	consoletext(64*10 + 20, paltxt[palette_value], 0x1000);
 }
 
+void apply_display_settings(void)
+{
+	int type = (__emuflags >> 6) & 3;
+	int i;
+
+	if ((__emuflags & 3) == 2)
+		__emuflags &= ~3;
+	if (type > 2) {
+		__emuflags &= ~(3 << 6);
+		__emuflags |= SPLINE;
+		type = 1;
+	}
+
+	switch (type) {
+	case 0:
+	case 1:
+		videoSetMode(MODE_0_2D);
+		videoBgDisable(3);
+		for (i = 0; i < 4*8/4; i++)
+			agb_bg_map[i] = -1;
+		break;
+	case 2:
+		videoSetMode(MODE_5_2D);
+		videoBgEnable(3);
+		BGCTRL[3] = (typeof(BGCTRL_SUB[3]))(BgSize_B8_256x256 | BG_MAP_BASE(0) | BG_TILE_BASE(0));
+		REG_BG3PA = 256;
+		REG_BG3PB = 0;
+		REG_BG3PC = 0;
+		REG_BG3PD = 512 - (ad_scale >> 8);
+		swiWaitForVBlank();
+		videoSetMode(MODE_5_2D);
+		videoBgEnable(3);
+		BGCTRL[3] = (typeof(BGCTRL_SUB[3]))(BgSize_B8_256x256 | BG_MAP_BASE(0) | BG_TILE_BASE(0));
+		REG_BG3PA = 256;
+		REG_BG3PB = 0;
+		REG_BG3PC = 0;
+		REG_BG3PD = 512 - (ad_scale >> 8);
+		break;
+	}
+
+	rescale(ad_scale, ad_ypos);
+}
+
 void menu_preset_func(void) {
 	if (lastbutton_cnt == 0) {
 	ad_scale = 0x10000;
@@ -446,8 +489,8 @@ int adjustdisplay(void)
 	return 0;
 }
 
-int ad_scale = 0xe000;
-int ad_ypos = -0x00060000;
+int ad_scale = DEFAULT_SCREEN_SCALE;
+int ad_ypos = DEFAULT_SCREEN_OFFSET;
 void menu_display_adjust(void) {
 
 	static int dragging = 0;
@@ -483,7 +526,7 @@ void menu_display_adjust(void) {
 			i = (192*65536)/i;
 
 			ad_scale = i;
-			ad_ypos = j<<16;
+			ad_ypos = j * 65536;
 			touchstate = 3;	// hide touch input from tab+exit text
 		}
 	} else {
@@ -537,54 +580,13 @@ void menu_display_br(void)
 					__emuflags |= 1; // noflicker
 					break;
 			}
-			rescale(ad_scale,ad_ypos);
+			apply_display_settings();
 		}
 		else {
 			int type = lastbutton_cnt - 4;
-			int i;
 			__emuflags &= ~(3 << 6);
-			__emuflags += type << 6;
-
-			switch(type) {
-			case 0:	
-				{
-					videoSetMode(MODE_0_2D);
-					videoBgDisable(3);
-					for (i = 0; i < 4*8/4; i++) {
-						agb_bg_map[i] = -1;
-					}
-				}
-				break;
-			case 1: // sp-perline
-				{
-					videoSetMode(MODE_0_2D);
-					videoBgDisable(3);
-					for (i = 0; i < 4*8/4; i++) {
-						agb_bg_map[i] = -1;
-					}
-				}
-				break;
-			case 2: // pure-soft
-				{
-					videoSetMode(MODE_5_2D);
-					videoBgEnable(3);
-					BGCTRL[3] = (typeof(BGCTRL_SUB[3]))(BgSize_B8_256x256 | BG_MAP_BASE(0) | BG_TILE_BASE(0));	//This is weird....
-					//bgInit(3, BgType_Bmp8, BgSize_B8_256x256, 0,0);
-					REG_BG3PA = 256;
-					REG_BG3PB = 0;
-					REG_BG3PC = 0;
-					REG_BG3PD = 512 - (ad_scale >> 8);
-					swiWaitForVBlank();
-					videoSetMode(MODE_5_2D);
-					videoBgEnable(3);
-					BGCTRL[3] = (typeof(BGCTRL_SUB[3]))(BgSize_B8_256x256  | BG_MAP_BASE(0) | BG_TILE_BASE(0));
-					REG_BG3PA = 256;
-					REG_BG3PB = 0;
-					REG_BG3PC = 0;
-					REG_BG3PD = 512 - (ad_scale >> 8);
-				}
-				break;
-			}
+			__emuflags |= type << 6;
+			apply_display_settings();
 		}
 		//consoletext(64*12 + 4, "Blend Type:", 0);
 		consoletext(64*12 + 16, blendnames[__emuflags&3], 0x1000);
@@ -859,18 +861,11 @@ void menu_extra_action(void)
 				break;
 			case 5:
 				{
-					if (active_interface || globals.mapperNr == 20) {
-						romfileext[0] = 'f';
-						romfileext[1] = 'd';
-						romfileext[2] = 's';
-						romfileext[3] = 0;
-						FILE *f = fopen(romfilename,"w");
-						if (f) {
-							fwrite((u8*)rom_start,1,16 + (65500 * (globals.prgSize16k >> 2)),f);
-							fflush(f);
-							fclose(f);
-						}
-					}
+					int result = save_fds();
+					consoletext(64*22+2,
+						result > 0 ? "FDS saved" :
+						result < 0 ? "FDS save failed" : "No writable FDS changes",
+						result > 0 ? 0 : 0x1000);
 				}
 				break;
 			}
@@ -1064,11 +1059,11 @@ void menu_shortcut_start(void)
 void menu_gesture_func(void)
 {
 	int ret;
-	memset(gestures_tbl[sc], 0, 17);
+	memset(gestures_tbl[sc], 0, sizeof(gestures_tbl[sc]));
 	if (!(ret = get_gesture(64 * 11 + 16)))
 		return;
 	if (ret > 0) {
-		memcpy(gestures_tbl[sc], gesture_combo, 17);
+		strcpy(gestures_tbl[sc], gesture_combo);
 	}
 	menu_stat = 3;
 	consoletext(64 * 11, "Gesture:", 0);
@@ -1084,7 +1079,7 @@ void menu_shortcut_func(void)
 		switch (lastbutton_cnt) {
 		case 12:
 			shortcuts_tbl[sc] = 0;
-			memset(gestures_tbl[sc], 0, 17);
+			memset(gestures_tbl[sc], 0, sizeof(gestures_tbl[sc]));
 			break;
 		case 13:
 			sc++;
@@ -1180,8 +1175,8 @@ void menu_saveini(void)
 
 	if (!active_interface) return;
 
-	inibuf[0] = 0;
-	getcwd(inibuf, 512);
+	if (!getcwd(inibuf, sizeof(inibuf)))
+		return;
 
 	// StartIn
 	for (i = 0; i < strlen(inibuf); i++) {
@@ -1229,7 +1224,10 @@ void menu_saveini(void)
 		nesdsini[0] = 0;
 		for (j = 0; j < 12; j++) {
 			if (shortcuts_tbl[i] & (1 << j)) {
-				pos += sprintf(nesdsini + pos, "%s, ", keystrs[j]);
+				int written = snprintf(nesdsini + pos, sizeof(nesdsini) - pos, "%s, ", keystrs[j]);
+				if (written < 0 || (size_t)written >= sizeof(nesdsini) - pos)
+					break;
+				pos += written;
 				k++;
 			}
 		}

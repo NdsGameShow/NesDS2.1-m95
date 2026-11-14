@@ -1,46 +1,49 @@
 #include <nds.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
-
-void SplitItemFromFullPathAlias(const char *pFullPathAlias,char *pPathAlias,char *pFilenameAlias) {
-	u32 SplitPos = 0;
-	{
-		u32 idx = 0;
-		while (1) {
-			char uc = pFullPathAlias[idx];
-			if(uc == 0) break;
-			if(uc == '/') SplitPos = idx + 1;
-			idx++;
-		}
-	}
-
-	if (pPathAlias) {
-		if (SplitPos <= 1) {
-			pPathAlias[0] = '/';
-			pPathAlias[1] = 0;
-		} else {
-			u32 idx = 0;
-			for(; idx < SplitPos - 1; idx++){
-				pPathAlias[idx] = pFullPathAlias[idx];
-			}
-			pPathAlias[SplitPos - 1] = 0;
-		}
-	}
-
-	if(pFilenameAlias)
-		strcpy(pFilenameAlias, &pFullPathAlias[SplitPos]);
-}
 
 extern int argc;
 extern char **argv;
-bool readFrontend(char *target)
+bool readFrontend(char *target, int target_size)
 {
 	char dir[768];
-	if (argc < 2)
+	const char *fullpath;
+	const char *filename;
+	const char *slash;
+	size_t dir_length;
+	size_t filename_length;
+
+	if (target == NULL || target_size <= 0)
+		return false;
+	target[0] = '\0';
+	if (argc < 2 || argv == NULL || argv[1] == NULL)
 		return false;
 
-	SplitItemFromFullPathAlias(argv[1],dir,target);
-	chdir(dir);
+	fullpath = argv[1];
+	slash = strrchr(fullpath, '/');
+	if (slash != NULL) {
+		dir_length = slash == fullpath ? 1 : (size_t)(slash - fullpath);
+		filename = slash + 1;
+		if (dir_length >= sizeof(dir))
+			return false;
+		memcpy(dir, fullpath, dir_length);
+		dir[dir_length] = '\0';
+	} else {
+		dir[0] = '/';
+		dir[1] = '\0';
+		dir_length = 1;
+		filename = fullpath;
+	}
+
+	filename_length = strlen(filename);
+	if (filename_length == 0 || filename_length >= (size_t)target_size)
+		return false;
+	memcpy(target, filename, filename_length + 1);
+	if (chdir(dir) != 0) {
+		target[0] = '\0';
+		return false;
+	}
 	return true;
 }
 
