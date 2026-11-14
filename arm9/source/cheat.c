@@ -4,6 +4,17 @@
 #include "menu.h"
 #include "c_defs.h"
 
+extern void enter_save_context(void);
+extern void leave_save_context(void);
+extern int active_interface;
+extern char romfilename[];
+extern char *romfileext;
+
+extern int last_x, last_y;
+
+extern int Sound_pause(void);
+extern int Sound_resume(void);
+
 struct cheatlist_s
 {
 	unsigned int add;
@@ -46,49 +57,151 @@ void cheat_reset(void)
 	memset(cheatlistdata, 0, sizeof(cheatlistdata));
 }
 
-//load a cheat file.
+//load a cheat file (supports both human-readable text format and legacy 1024-byte binary).
 void load_cheat(void)
 {
 	FILE *f;
-	char buf[1024];
+	char buf[1025];
 	int len;
+	int is_legacy_binary = 0;
 
 	if(!active_interface) return;
 
+	(void)Sound_pause();
+	enter_save_context();
 	romfileext[0]='c';
 	romfileext[1]='h';
 	romfileext[2]='t';
 	romfileext[3]=0;
-	f=fopen(romfilename,"r");
-	if(!f) return;
-	len=fread(buf,1,1024,f);
+	f=fopen(romfilename,"rb");
+	if(!f) {
+		leave_save_context();
+		(void)Sound_resume();
+		return;
+	}
+	len=fread(buf,1,sizeof(buf) - 1,f);
 	fclose(f);
-	memcpy(&cheatcount, buf, 4);
-	memcpy(cheatlistdata, buf + 4, sizeof(cheatlistdata));
-	if(len != 1024) {
+	leave_save_context();
+	(void)Sound_resume();
+
+	if (len <= 0)
+		return;
+
+	// Detect legacy 1024-byte binary cheat format (count in first 4 bytes, 0..14)
+	if (len >= 1023) {
+		int bin_count = 0;
+		memcpy(&bin_count, buf, 4);
+		if (bin_count >= 0 && bin_count <= 14 && (buf[2] == 0 && buf[3] == 0)) {
+			is_legacy_binary = 1;
+			cheatcount = bin_count;
+			memset(cheatlistdata, 0, sizeof(cheatlistdata));
+			if (cheatcount > 0)
+				memcpy(cheatlistdata, buf + 4, (size_t)cheatcount * sizeof(cheatlistdata[0]));
+		}
+	}
+
+	if (!is_legacy_binary) {
+		char *line;
+		char *next_line;
+
+		buf[len] = '\0';
 		cheatcount = 0;
+		memset(cheatlistdata, 0, sizeof(cheatlistdata));
+
+		line = buf;
+		while (line != NULL && *line != '\0' && cheatcount < 14) {
+			unsigned int addr = 0;
+			unsigned int val = 0;
+			char *p;
+			char *sep1;
+			char *sep2;
+			unsigned char c_type = 0;
+			unsigned char c_dis = 0;
+
+			next_line = strpbrk(line, "\r\n");
+			if (next_line != NULL) {
+				*next_line = '\0';
+				next_line++;
+				while (*next_line == '\r' || *next_line == '\n')
+					next_line++;
+			}
+
+			p = line;
+			while (*p == ' ' || *p == '\t')
+				p++;
+
+			if (*p != '\0' && *p != '#' && *p != ';') {
+				sep1 = strchr(p, ':');
+				if (sep1 != NULL) {
+					*sep1 = '\0';
+					addr = (unsigned int)strtoul(p, NULL, 16) & 0x7FF;
+					p = sep1 + 1;
+
+					sep2 = strchr(p, ':');
+					if (sep2 != NULL)
+						*sep2 = '\0';
+					val = (unsigned int)strtoul(p, NULL, 16) & 0xFF;
+
+					if (sep2 != NULL) {
+						char *opt = sep2 + 1;
+						char *sep3 = strchr(opt, ':');
+						if (sep3 != NULL) {
+							*sep3 = '\0';
+							if (strstr(sep3 + 1, "off") || strstr(sep3 + 1, "OFF") || strstr(sep3 + 1, "0"))
+								c_dis = 0x80;
+						}
+						if (strstr(opt, "once") || strstr(opt, "ONCE") || opt[0] == '1' || opt[0] == '2')
+							c_type = (opt[0] == '2') ? 2 : 1;
+						if (strstr(opt, "off") || strstr(opt, "OFF"))
+							c_dis = 0x80;
+					}
+
+					cheatlistdata[cheatcount].add = addr;
+					cheatlistdata[cheatcount].val = (unsigned char)val;
+					cheatlistdata[cheatcount].type = c_type | c_dis;
+					cheatcount++;
+				}
+			}
+			line = next_line;
+		}
 	}
 }
 
-//save to a cheat file.
+//save to a cheat file in human-readable text format.
 void save_cheat(void)
 {
 	FILE *f;
-	char buf[1024];
+	int i;
 
 	if(!active_interface) return;
 
+	(void)Sound_pause();
+	enter_save_context();
 	romfileext[0]='c';
 	romfileext[1]='h';
 	romfileext[2]='t';
 	romfileext[3]=0;
 	f=fopen(romfilename,"w");
-	if(!f) return;
-	memcpy(buf, &cheatcount, 4);
-	memcpy(buf + 4, cheatlistdata, sizeof(cheatlistdata));
-	fwrite(buf,1,1024,f);
+	if(!f) {
+		leave_save_context();
+		(void)Sound_resume();
+		return;
+	}
+	fprintf(f, "# nesDS Cheat File (ADDR:VAL:TYPE:STATE)\n");
+	for (i = 0; i < cheatcount && i < 14; i++) {
+		unsigned char raw_type = cheatlistdata[i].type;
+		const char *type_str = ((raw_type & ~0x80) == 0) ? "fix" : "once";
+		const char *state_str = (raw_type & 0x80) ? "off" : "on";
+		fprintf(f, "%03X:%02X:%s:%s\n",
+			cheatlistdata[i].add & 0x7FF,
+			cheatlistdata[i].val & 0xFF,
+			type_str,
+			state_str);
+	}
 	fflush(f);
 	fclose(f);
+	leave_save_context();
+	(void)Sound_resume();
 }
 
 // add a cheat list to the Chtlist menu....
@@ -238,7 +351,9 @@ touchstring cheatlisttouch[] = {
 {-1,0}
 };
 
-// to maintain cheat list
+
+#define CHEAT_DISABLED 0x80
+
 int cheatlist()
 {
 	char *type[] = {"fix", "once", "once"};
@@ -246,7 +361,7 @@ int cheatlist()
 	static char state;//1 edit 0 null
 	static unsigned char editnum;
 	static unsigned int preadd;
-	static unsigned char preval, pretype;
+	static unsigned char preval, pretype, predis;
 
 	if (menu_stat == 5) {
 		for(i = 4; i <= 24; i++)  {
@@ -255,22 +370,52 @@ int cheatlist()
 		menu_stat = 6;
 	}
 	for (i = 4; i < cheatcount + 4; i++)  {
-		int j;
-		consoletext(64 * i, "add:0x    val:0x   type:        ", 0);
+		unsigned char raw_type = cheatlistdata[i - 4].type;
+		unsigned char is_off = (raw_type & CHEAT_DISABLED) ? 1 : 0;
+		unsigned char base_type = raw_type & ~CHEAT_DISABLED;
+		int color = is_off ? 0x2000 : 0;
+
+		if (base_type > 2)
+			base_type = 0;
+
+		consoletext(64 * i, "add:0x    val:0x   type:        ", color);
 		hex(64 * i + 12, cheatlistdata[i - 4].add, 2);
 		hex(64 * i + 12 + 20, cheatlistdata[i - 4].val, 1);
-		consoletext(64 * i + 30 + 8 + 10, type[cheatlistdata[i - 4].type], 0);
+		consoletext(64 * i + 30 + 8 + 10, type[base_type], color);
+		consoletext(64 * i + 56 + (i & 1 ? 4 : 0), cheatlisttouch[0].str, 0);
 
-		cheatlisttouch[0].offset = 64 * i + 56 + (i & 1 ? 4 : 0);
+		// Apply ON (white) or OFF (dark gray) palette color to the row text (cols 0..27)
+		{
+			u16 *map = (u16 *)SUB_BG;
+			int col;
+			int row_base = 32 * i;
+			for (col = 0; col < 28; col++) {
+				map[row_base + col] = (map[row_base + col] & 0x0FFF) | color;
+			}
+		}
+	}
 
-		j = do_touchstrings(cheatlisttouch, 0);
-		if (touchstate == 4 && j == 0)  {
-			state = 1;
-			editnum = i - 4;
-			preadd = cheatlistdata[editnum].add;
-			preval = cheatlistdata[editnum].val;
-			pretype = cheatlistdata[editnum].type;
-		}		
+	if (touchstate == 4 && cheatcount > 0) {
+		int touched_row = last_y / 8;
+		if (touched_row >= 4 && touched_row < cheatcount + 4) {
+			int target = touched_row - 4;
+			if (last_x >= 220) {
+				// Open edit panel on touching the right 'E' icon
+				unsigned char raw_type = cheatlistdata[target].type;
+				state = 1;
+				editnum = (unsigned char)target;
+				preadd = cheatlistdata[target].add;
+				preval = cheatlistdata[target].val;
+				predis = (raw_type & CHEAT_DISABLED) ? CHEAT_DISABLED : 0;
+				pretype = raw_type & ~CHEAT_DISABLED;
+				if (pretype > 2)
+					pretype = 0;
+			} else {
+				// Toggle ON / OFF strictly for the touched row
+				cheatlistdata[target].type ^= CHEAT_DISABLED;
+				menu_stat = 5;
+			}
+		}
 	}
 
 	if(state == 1)  {
@@ -338,7 +483,7 @@ int cheatlist()
 				case 11:
 					cheatlistdata[editnum].add = preadd;
 					cheatlistdata[editnum].val = preval;
-					cheatlistdata[editnum].type = pretype? 1:0;
+					cheatlistdata[editnum].type = (pretype ? 1 : 0) | predis;
 					state = 0;
 					break;
 				case 12:	
@@ -374,7 +519,7 @@ int cheatlist()
 					if(cheatcount < 14) {
 						cheatlistdata[cheatcount].add = 0;
 						cheatlistdata[cheatcount].val = 0;
-						cheatlistdata[cheatcount].type = 2;
+						cheatlistdata[cheatcount].type = 2 | CHEAT_DISABLED;
 						cheatcount ++;
 					}
 					menu_stat = 5;
@@ -385,6 +530,7 @@ int cheatlist()
 	return 0;
 }
 
+
 // do the cheat in the main loop
 
 int do_cheat()
@@ -392,6 +538,8 @@ int do_cheat()
 	int i;
 	if(cheatcount)  {
 		for(i = 0; i < cheatcount; i++)  {
+			if (cheatlistdata[i].type & CHEAT_DISABLED)
+				continue;
 			if(cheatlistdata[i].type == 0)  {
 				*(char *)(NES_RAM + cheatlistdata[i].add) = cheatlistdata[i].val;
 			}

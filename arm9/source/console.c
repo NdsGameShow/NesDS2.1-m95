@@ -173,9 +173,14 @@ void clearconsole() {
 * description:		none
 ******************************/
 void consoleinit() {
+	int i;
 	dmaCopyHalfWords(3,&font,(u16*)(SUB_CHR+0x400),1024*4);
 	dmaCopyHalfWords(3,cusfont,(u16*)(SUB_CHR+0x1400),6*32);
 	dmaCopyHalfWords(3,&fontpal,(u16*)BG_PALETTE_SUB,128);
+	BG_PALETTE_SUB[32] = BG_PALETTE_SUB[0];
+	for (i = 1; i < 16; i++) {
+		BG_PALETTE_SUB[32 + i] = RGB15(8, 8, 8);
+	}
 	showconsole();
 }
 
