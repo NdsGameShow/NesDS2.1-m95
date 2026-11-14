@@ -1168,6 +1168,8 @@ char nesdsini[1024];
 
 void menu_saveini(void)
 {
+	extern int Sound_pause(void);
+	extern int Sound_resume(void);
 	int pos = 0;
 	int i, j, k;
 
@@ -1177,6 +1179,8 @@ void menu_saveini(void)
 
 	if (!getcwd(inibuf, sizeof(inibuf)))
 		return;
+
+	(void)Sound_pause();
 
 	// StartIn
 	for (i = 0; i < strlen(inibuf); i++) {
@@ -1237,4 +1241,6 @@ void menu_saveini(void)
 			ini_putl("nesDSrev2", ishortcuts[i], 0, ininame);
 		ini_puts("nesDSrev2", igestures[i], gestures_tbl[i], ininame);
 	}
+
+	(void)Sound_resume();
 }

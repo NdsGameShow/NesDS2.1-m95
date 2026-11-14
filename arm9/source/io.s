@@ -66,22 +66,9 @@ refreshNESjoypads:	;@ Call every frame
 
 	tst r2,#B_A_SWAP		;@ Swap buttons?
 	bne rj0
-		tst r1,#KEY_B
-		orrne r0,r0,#1
-		tst r2,#AUTOFIRE	;@ Auto?
-		tstne r1,#KEY_A
-		orrne r0,r0,#1
-
-		tst r1,#KEY_Y
-		orrne r0,r0,#2
-		tst r2,#AUTOFIRE
-		tstne r1,#KEY_X
-		orrne r0,r0,#2
-	b rj1
-rj0:
 		tst r1,#KEY_A
 		orrne r0,r0,#1
-		tst r2,#AUTOFIRE
+		tst r2,#AUTOFIRE	;@ Auto?
 		tstne r1,#KEY_X
 		orrne r0,r0,#1
 
@@ -89,6 +76,19 @@ rj0:
 		orrne r0,r0,#2
 		tst r2,#AUTOFIRE
 		tstne r1,#KEY_Y
+		orrne r0,r0,#2
+	b rj1
+rj0:
+		tst r1,#KEY_B
+		orrne r0,r0,#1
+		tst r2,#AUTOFIRE
+		tstne r1,#KEY_Y
+		orrne r0,r0,#1
+
+		tst r1,#KEY_A
+		orrne r0,r0,#2
+		tst r2,#AUTOFIRE
+		tstne r1,#KEY_X
 		orrne r0,r0,#2
 rj1:
 	tst r1,#KEY_SELECT
@@ -324,30 +324,30 @@ rj3:
 	mov r1, r1, lsr#16
 	tst r2,#B_A_SWAP		@swap buttons?
 	bne rj4
-		tst r1,#KEY_B
-		orrne r0,r0,#(1 << 8)
-		tst r2,#AUTOFIRE	@auto?
-		tstne r1,#KEY_A
-		eorne r0,r0,#(1 << 8)
-
-		tst r1,#KEY_Y
-		orrne r0,r0,#(2 << 8)
-		tst r2,#AUTOFIRE
-		tstne r1,#KEY_X
-		orrne r0,r0,#(2 << 8)
-	b rj5
-rj4:
 		tst r1,#KEY_A
-		orrne r0,r0,#(1 << 8)
-		tst r2,#AUTOFIRE
+		orrne r0,r0,#1
+		tst r2,#AUTOFIRE	;@ Auto?
 		tstne r1,#KEY_X
-		eorne r0,r0,#(1 << 8)
+		orrne r0,r0,#1
 
 		tst r1,#KEY_B
-		orrne r0,r0,#(2 << 8)
+		orrne r0,r0,#2
 		tst r2,#AUTOFIRE
 		tstne r1,#KEY_Y
-		orrne r0,r0,#(1 << 8)
+		orrne r0,r0,#2
+	b rj5
+rj4:
+		tst r1,#KEY_B
+		orrne r0,r0,#1
+		tst r2,#AUTOFIRE
+		tstne r1,#KEY_Y
+		orrne r0,r0,#1
+
+		tst r1,#KEY_A
+		orrne r0,r0,#2
+		tst r2,#AUTOFIRE
+		tstne r1,#KEY_X
+		orrne r0,r0,#2
 rj5:
 	tst r1,#KEY_SELECT
 	orrne r0,r0,#(4 << 8)
