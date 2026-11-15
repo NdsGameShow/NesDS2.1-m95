@@ -152,8 +152,8 @@ int menu_touchcontroller() {
 		*B_btn = 'B';
 		*A_btn = 'A';
 	} else {
-		*B_btn = 'Y';
-		*A_btn = 'B';
+		*B_btn = 'B';
+		*A_btn = 'A';
 	}
 	if (!(flags&LOCK))
 		flags &= ~0xffff;
