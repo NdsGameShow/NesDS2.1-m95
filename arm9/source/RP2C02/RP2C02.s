@@ -263,30 +263,62 @@ rescale_nr:		@r0=scale, r1=starting Y<<16
 	str r0,scale
 	str r1,DMAlinestart		;@ scaleTable2 never used...
 
-	stmfd sp!,{r4-r9,globalptr,lr}
+	stmfd sp!,{r0-r9,globalptr,lr}
+
+	;@ 1. HDMAバッファをクリアして上下余白の残骸を防ぐ
+	ldr r0,=DISPCNT_INIT
+	ldr r1,=DISPCNTBUFF
+	mov r2,#240
+	bl filler
+
+	mov r0,#0
+	ldr r1,=BGCNTBUFF
+	mov r2,#(240*32)/4
+	bl filler
+
+	ldmfd sp,{r0,r1}		;@ r0=scale, r1=starting Y<<16 を復元
+
+	;@ 2. ハードウェアウィンドウ(WIN0V/WIN1V)の上下クリッピング範囲を計算・設定
+	movs r2,r1,asr#16		;@ top_y = starting_y >> 16
+	movmi r2,#0
+	cmp r2,#192
+	movhi r2,#192
+
+	mov r3,#240
+	mla r3,r0,r3,r1			;@ end_y_fp = starting_y + scale * 240
+	movs r3,r3,asr#16		;@ bottom_y = end_y_fp >> 16
+	movmi r3,#0
+	cmp r3,#192
+	movhi r3,#192
+
+	orr r2,r3,r2,lsl#8		;@ REG_WINxV = (top_y << 8) | bottom_y
+	mov r3,#REG_BASE
+	strh r2,[r3,#REG_WIN0V]
+	strh r2,[r3,#REG_WIN1V]
+
 	ldr globalptr,=globals
 	ldr r3, =0x4000
 
-		add r8,r1,r3
+	add r8,r1,r3
 	mov r2,#0				;@ Line counter
 	adr r3,scaleTable
-		ldr r7,=scaleTable2
-		ldr r9,=spriteY_lookup2	;@ Sprite need flicker too..
+	ldr r7,=scaleTable2
+	ldr r9,=spriteY_lookup2	;@ Sprite need flicker too..
 	ldr r5,=spriteY_lookup
 	mov r6,#0				;@ Zero
-
-rs1:	movs r4,r1,asr#16
+rs1:
+	movs r4,r1,asr#16
 	strplb r4,[r3,r2]
 	strmib r6,[r3,r2]
 	@add r4, r4, #1			;@ I dont like this...
 	strb r4,[r9,r2]
-		movs r4,r8,asr#16
-		strplb r4,[r7,r2]
-		strmib r6,[r7,r2]
+	movs r4,r8,asr#16
+	strplb r4,[r7,r2]
+	strmib r6,[r7,r2]
 	@add r4,r4,#1
 	strb r4,[r5,r2]
 	add r1,r1,r0
-		add r8,r8,r0
+	add r8,r8,r0
 	add r2,r2,#1
 	cmp r2,#256
 	bcc rs1
@@ -298,7 +330,7 @@ rs1:	movs r4,r1,asr#16
 	ldreq r2,=0x10000310
 	str r2,[r1,#REG_BLDCNT]
 
-	ldmfd sp!,{r4-r9,globalptr,pc}
+	ldmfd sp!,{r0-r9,globalptr,pc}
 ;@-----------------------------------------------------------------------------
 PPU_reset:
 ;@-----------------------------------------------------------------------------
@@ -477,7 +509,7 @@ ppusync:		;@ Called on NES scanline 0..239 (r0=line)
 	movs r2, r2, lsr#16
 	ldr r1, =IPC_TOUCH_Y
 	ldrh r1, [r1]
-	movmi r1, #0		;@ Undefined area.
+	movmi r1,# 0		;@ Undefined area.
 	cmp r2, #240
 	movcs r1, #239		;@ over....
 	cmp r1, r2
@@ -510,12 +542,12 @@ ppusync:		;@ Called on NES scanline 0..239 (r0=line)
 	add r2,r2,r1
 	str r2,DMAline
 
-	movs r0,r2,asr#16
-	movmi r0,#0
-	ldr r1, =0x3334
-	add r2,r2,r1
-	movs r1,r2,asr#16
-	movmi r1,#0			;@ r0,r1=scaled line
+	movs r0, r2, asr# 16
+	movmi r0,# 239			;@ 画面外(マイナス)は未使用の240行目へ逃がす
+	ldr r1, = 0x3334
+	add r2, r2, r1
+	movs r1, r2, asr# 16
+	movmi r1,# 239			;@ r0,r1=scaled line
 
 	@- - - 
 
