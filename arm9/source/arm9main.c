@@ -30,7 +30,7 @@ void do_romebd()
 void showversion()
 {
 	memset((void *)(SUB_BG),0,64*3);
-	consoletext(0,"nesDS v2.1-m95h",0);
+	consoletext(0,"nesDS v2.1-m95i",0);
 	consoletext(64,"Build: " __DATE__ " " __TIME__,0);
 	consoletext(64*2,"________________________________",0);
 }
