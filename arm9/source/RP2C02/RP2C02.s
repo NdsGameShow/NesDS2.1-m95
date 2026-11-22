@@ -552,12 +552,24 @@ ppusync:		;@ Called on NES scanline 0..239 (r0=line)
 	@- - - 
 
 	ldr r12,=DISPCNTBUFF
-	add r12,r12,r0,lsl#2
-	ldr r2,dispcnt
-	ldr r3,currentBG
-	tst r3, #0x80
-	orrne r2, r2, #0x04000000
-	str r2,[r12]
+    add r12,r12,r0,lsl#2
+    ldr r2,dispcnt
+    ldr r3,currentBG
+    tst r3, #0x80
+    orrne r2, r2, #0x04000000
+    ldr_ r3,mapperNr
+    cmp r3,#95
+    bne 1f
+    ldr_ r3,sprite0Y
+    sub r3,r3,#170
+    cmp r3,#10
+    bcs 1f
+    ldr_ r3,scanline
+    sub r3,r3,#174
+    cmp r3,#4
+    biccc r2,r2,#0x1100
+1:
+    str r2,[r12]
 
 	@- - -
 
