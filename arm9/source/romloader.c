@@ -736,50 +736,54 @@ int init_rommenu() {
 		return 0;
 	}
 	files = (const char **)rom_files;
-	nextfile = (char *)&files[MAXFILES];
-	names_end = nextfile + MAXFILES * 64;
-	irqDisable(IRQ_VBLANK);
-	dir = opendir(".");
+    nextfile = (char *)&files[MAXFILES];
+    names_end = nextfile + MAXFILES * 64;
+    dir = opendir(".");
 	if (dir == NULL) {
-		irqEnable(IRQ_VBLANK);
-		return 0;
-	}
-	memset(files, 0, MAXFILES * sizeof(*files));
+           return 0;
+    }
+    memset(files, 0, MAXFILES * sizeof(*files));
 
-	while (idx < MAXFILES-1 && (cnt = readdir(dir)) != NULL) {
-		is_parent = strcmp("..", cnt->d_name) == 0;
-		if (is_parent) {
-			is_directory = 1;
-		} else {
-			if (stat(cnt->d_name, &statbuf) != 0)
-				continue;
-			is_directory = S_ISDIR(statbuf.st_mode);
-		}
-		if (((strstr(cnt->d_name, ".NES") || strstr(cnt->d_name, ".nes"))
-			|| (strstr(cnt->d_name, ".FDS") || strstr(cnt->d_name, ".fds"))
-			|| (strstr(cnt->d_name, ".IPS") || strstr(cnt->d_name, ".ips"))
-			|| (strstr(cnt->d_name, ".GZ") || strstr(cnt->d_name, ".gz"))
-			|| (strstr(cnt->d_name, ".ZIP") || strstr(cnt->d_name, ".zip"))
-			|| (strstr(cnt->d_name, ".nsf") || strstr(cnt->d_name, ".nsf"))
-			|| is_directory) && strcmp(".", cnt->d_name) != 0) {
-			name_len = strlen(cnt->d_name);
-			if (name_len + 2 > (size_t)(names_end - nextfile))
-				break;
-			if (is_directory)
-				*nextfile = 1;
-			else 
-				*nextfile = 2;
-			memcpy(nextfile + 1, cnt->d_name, name_len + 1);
-			files[idx] = nextfile;
-			nextfile += name_len + 2;
-			idx++;
-		}
-	}
-	closedir(dir);
-	irqEnable(IRQ_VBLANK);
-	files[idx] = 0;
-	stringsort(files);
-	return idx;
+    while (idx < MAXFILES-1 && (cnt = readdir(dir)) != NULL) {
+            is_parent = strcmp("..", cnt->d_name) == 0;
+            if (cnt->d_name[0] == '.' && !is_parent) {
+                    continue;
+            }
+            if (is_parent) {
+                is_directory = 1;
+            } else if (cnt->d_type == DT_DIR) {
+                    is_directory = 1;
+            } else if (cnt->d_type == DT_REG) {
+                    is_directory = 0;
+            } else {
+                    if (stat(cnt->d_name, &statbuf) != 0)
+                            continue;
+                    is_directory = S_ISDIR(statbuf.st_mode);
+            }
+            if ((strstr(cnt->d_name, ".NES") || strstr(cnt->d_name, ".nes"))
+                    || (strstr(cnt->d_name, ".FDS") || strstr(cnt->d_name, ".fds"))
+                    || (strstr(cnt->d_name, ".IPS") || strstr(cnt->d_name, ".ips"))
+                    || (strstr(cnt->d_name, ".GZ") || strstr(cnt->d_name, ".gz"))
+                    || (strstr(cnt->d_name, ".ZIP") || strstr(cnt->d_name, ".zip"))
+                    || (strstr(cnt->d_name, ".NSF") || strstr(cnt->d_name, ".nsf"))
+                    || is_directory) {
+                    name_len = strlen(cnt->d_name);
+                    if (name_len + 2 > (size_t)(names_end - nextfile))
+                        break;
+                    if (is_directory)
+                        *nextfile = 1;
+                    else 
+                        *nextfile = 2;
+                    memcpy(nextfile + 1, cnt->d_name, name_len + 1);
+                    files[idx] = nextfile;
+                    nextfile += name_len + 2;
+                    idx++;
+            }
+        }
+        closedir(dir);
+        files[idx] = 0;
+        stringsort(files);
+        return idx;
 }
 
 

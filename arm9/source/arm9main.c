@@ -137,6 +137,7 @@ int main(int _argc, char **_argv) {
 	EMU_Init(); //emulation init.
 
 	irqSet(IRQ_VBLANK, vblankinterrupt);
+	irqEnable(IRQ_VBLANK);
 	irqEnable(IRQ_HBLANK);
 	//fifoSetValue32Handler(FIFO_USER_06, aliveinterrupt, 0);
 	//fifoSetValue32Handler(FIFO_USER_05, reg4015interrupt, 0);
