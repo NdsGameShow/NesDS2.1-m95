@@ -114,7 +114,7 @@ void hideconsole() {
 	if (!(__emuflags & ALLPIXELON)) {
 		__emuflags &= ~ALLPIXEL;
 		if (!(__emuflags & SCREENSWAP)) {
-			powerOff(PM_BACKLIGHT_BOTTOM);			// This cannot be accessed directly.
+			powerOff(PM_BACKLIGHT_BOTTOM);                  // This cannot be accessed directly.
 			powerOn(PM_BACKLIGHT_TOP);
 			lcdMainOnTop();
 		} else {
@@ -162,8 +162,8 @@ void hideconsole() {
 * description:		none
 ******************************/
 void clearconsole() {
-	memset((void *)(SUB_BG+64*4),0,64*20);
-	REG_BG0VOFS = 0;
+	memset((u8 *)SUB_BG + 64 * 3, 0, 64 * 29);
+	REG_BG0VOFS_SUB = 0;
 }
 
 /*****************************

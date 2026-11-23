@@ -1,6 +1,7 @@
 #include <nds.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "menu.h"
 #include "c_defs.h"
 
@@ -15,6 +16,8 @@ extern int last_x, last_y;
 extern int Sound_pause(void);
 extern int Sound_resume(void);
 
+#define CHEAT_LABEL_LEN 15
+
 struct cheatlist_s
 {
 	unsigned int add;
@@ -23,6 +26,39 @@ struct cheatlist_s
 };
 
 struct cheatlist_s cheatlistdata[100];
+char cheatlabels[100][CHEAT_LABEL_LEN + 1];
+
+static void normalize_cheat_label(const char *src, char dst[CHEAT_LABEL_LEN + 1])
+{
+	int i = 0;
+	if (src != NULL) {
+		while (src[i] != '\0' && i < CHEAT_LABEL_LEN) {
+			char c = src[i];
+			if (c >= 'A' && c <= 'Z') {
+				c = (char)(c - 'A' + 'a');
+			} else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+				c = ' ';
+			}
+			dst[i] = c;
+			i++;
+		}
+	}
+	while (i < CHEAT_LABEL_LEN) {
+		dst[i] = ' ';
+		i++;
+	}
+	dst[CHEAT_LABEL_LEN] = '\0';
+}
+
+static int is_cheat_label_empty(const char label[CHEAT_LABEL_LEN + 1])
+{
+	int i;
+	for (i = 0; i < CHEAT_LABEL_LEN; i++) {
+		if (label[i] != ' ' && label[i] != '\0')
+			return 0;
+	}
+	return 1;
+}
 
 int cheatcount = 0;//all codes below are for the cheat func.
 char * searchtypechar[] = {"number      ", "equal     = ", "not equal !=", "increase  + ", "decrease  - ", "map       ? "};
@@ -53,8 +89,12 @@ touchstring cheataddtouch[] = {
 
 void cheat_reset(void)
 {
+	int i;
 	cheatcount = 0;
 	memset(cheatlistdata, 0, sizeof(cheatlistdata));
+	for (i = 0; i < 100; i++) {
+		normalize_cheat_label(NULL, cheatlabels[i]);
+	}
 }
 
 //load a cheat file (supports both human-readable text format and legacy 1024-byte binary).
@@ -64,6 +104,7 @@ void load_cheat(void)
 	char buf[1025];
 	int len;
 	int is_legacy_binary = 0;
+	int i;
 
 	if(!active_interface) return;
 
@@ -95,6 +136,9 @@ void load_cheat(void)
 			is_legacy_binary = 1;
 			cheatcount = bin_count;
 			memset(cheatlistdata, 0, sizeof(cheatlistdata));
+			for (i = 0; i < 100; i++) {
+				normalize_cheat_label(NULL, cheatlabels[i]);
+			}
 			if (cheatcount > 0)
 				memcpy(cheatlistdata, buf + 4, (size_t)cheatcount * sizeof(cheatlistdata[0]));
 		}
@@ -107,6 +151,9 @@ void load_cheat(void)
 		buf[len] = '\0';
 		cheatcount = 0;
 		memset(cheatlistdata, 0, sizeof(cheatlistdata));
+		for (i = 0; i < 100; i++) {
+			normalize_cheat_label(NULL, cheatlabels[i]);
+		}
 
 		line = buf;
 		while (line != NULL && *line != '\0' && cheatcount < 14) {
@@ -115,6 +162,7 @@ void load_cheat(void)
 			char *p;
 			char *sep1;
 			char *sep2;
+			char *label_ptr = NULL;
 			unsigned char c_type = 0;
 			unsigned char c_dis = 0;
 
@@ -146,8 +194,15 @@ void load_cheat(void)
 						char *opt = sep2 + 1;
 						char *sep3 = strchr(opt, ':');
 						if (sep3 != NULL) {
+							char *state_str = sep3 + 1;
+							char *sep4;
 							*sep3 = '\0';
-							if (strstr(sep3 + 1, "off") || strstr(sep3 + 1, "OFF") || strstr(sep3 + 1, "0"))
+							sep4 = strchr(state_str, ':');
+							if (sep4 != NULL) {
+								*sep4 = '\0';
+								label_ptr = sep4 + 1;
+							}
+							if (strstr(state_str, "off") || strstr(state_str, "OFF") || strstr(state_str, "0"))
 								c_dis = 0x80;
 						}
 						if (strstr(opt, "once") || strstr(opt, "ONCE") || opt[0] == '1' || opt[0] == '2')
@@ -159,6 +214,7 @@ void load_cheat(void)
 					cheatlistdata[cheatcount].add = addr;
 					cheatlistdata[cheatcount].val = (unsigned char)val;
 					cheatlistdata[cheatcount].type = c_type | c_dis;
+					normalize_cheat_label(label_ptr, cheatlabels[cheatcount]);
 					cheatcount++;
 				}
 			}
@@ -187,16 +243,25 @@ void save_cheat(void)
 		(void)Sound_resume();
 		return;
 	}
-	fprintf(f, "# nesDS Cheat File (ADDR:VAL:TYPE:STATE)\n");
+	fprintf(f, "# nesDS Cheat File (ADDR:VAL:TYPE:STATE:LABEL)\n");
 	for (i = 0; i < cheatcount && i < 14; i++) {
 		unsigned char raw_type = cheatlistdata[i].type;
 		const char *type_str = ((raw_type & ~0x80) == 0) ? "fix" : "once";
 		const char *state_str = (raw_type & 0x80) ? "off" : "on";
-		fprintf(f, "%03X:%02X:%s:%s\n",
-			cheatlistdata[i].add & 0x7FF,
-			cheatlistdata[i].val & 0xFF,
-			type_str,
-			state_str);
+		if (is_cheat_label_empty(cheatlabels[i])) {
+			fprintf(f, "%03X:%02X:%s:%s:\n",
+				cheatlistdata[i].add & 0x7FF,
+				cheatlistdata[i].val & 0xFF,
+				type_str,
+				state_str);
+		} else {
+			fprintf(f, "%03X:%02X:%s:%s:%s\n",
+				cheatlistdata[i].add & 0x7FF,
+				cheatlistdata[i].val & 0xFF,
+				type_str,
+				state_str,
+				cheatlabels[i]);
+		}
 	}
 	fflush(f);
 	fclose(f);
@@ -212,8 +277,10 @@ void addcheatlist(int add)
 	cheatlistdata[cheatcount].add = add;
 	cheatlistdata[cheatcount].val = *(char *)(NES_RAM + add);
 	cheatlistdata[cheatcount].type = 2;
+	normalize_cheat_label(NULL, cheatlabels[cheatcount]);
 	cheatcount++;
 }
+
 
 unsigned char lastcheatdata[0x800];
 unsigned char cheatdata[0x800];
@@ -354,23 +421,48 @@ touchstring cheatlisttouch[] = {
 
 #define CHEAT_DISABLED 0x80
 
+static char step_label_char(char c, int dir)
+{
+	int idx = 0;
+	if (c >= '0' && c <= '9')
+		idx = 1 + (c - '0');
+	else if (c >= 'a' && c <= 'z')
+		idx = 11 + (c - 'a');
+
+	idx += dir;
+	if (idx < 0)
+		idx = 36;
+	else if (idx > 36)
+		idx = 0;
+
+	if (idx == 0)
+		return ' ';
+	if (idx <= 10)
+		return (char)('0' + (idx - 1));
+	return (char)('a' + (idx - 11));
+}
+
 int cheatlist()
 {
 	char *type[] = {"fix", "once", "once"};
 	int i;
-	static char state;//1 edit 0 null
+	static char state;
+	static char edit_mode;
 	static unsigned char editnum;
 	static unsigned int preadd;
 	static unsigned char preval, pretype, predis;
+	static char prelabel[CHEAT_LABEL_LEN + 1];
 
 	if (menu_stat == 5) {
-		for(i = 4; i <= 24; i++)  {
+		for (i = 4; i <= 24; i++) {
 			consoletext(64 * i, "                                ", 0);
 		}
 		menu_stat = 6;
 	}
-	for (i = 4; i < cheatcount + 4; i++)  {
-		unsigned char raw_type = cheatlistdata[i - 4].type;
+
+	for (i = 4; i < cheatcount + 4; i++) {
+		int idx = i - 4;
+		unsigned char raw_type = cheatlistdata[idx].type;
 		unsigned char is_off = (raw_type & CHEAT_DISABLED) ? 1 : 0;
 		unsigned char base_type = raw_type & ~CHEAT_DISABLED;
 		int color = is_off ? 0x2000 : 0;
@@ -378,13 +470,18 @@ int cheatlist()
 		if (base_type > 2)
 			base_type = 0;
 
-		consoletext(64 * i, "add:0x    val:0x   type:        ", color);
-		hex(64 * i + 12, cheatlistdata[i - 4].add, 2);
-		hex(64 * i + 12 + 20, cheatlistdata[i - 4].val, 1);
-		consoletext(64 * i + 30 + 8 + 10, type[base_type], color);
+		if (!is_cheat_label_empty(cheatlabels[idx])) {
+			consoletext(64 * i, "                   type:        ", color);
+			consoletext(64 * i, cheatlabels[idx], color);
+			consoletext(64 * i + 48, type[base_type], color);
+		} else {
+			consoletext(64 * i, "add:0x    val:0x   type:        ", color);
+			hex(64 * i + 12, cheatlistdata[idx].add, 2);
+			hex(64 * i + 12 + 20, cheatlistdata[idx].val, 1);
+			consoletext(64 * i + 30 + 8 + 10, type[base_type], color);
+		}
 		consoletext(64 * i + 56 + (i & 1 ? 4 : 0), cheatlisttouch[0].str, 0);
 
-		// Apply ON (white) or OFF (dark gray) palette color to the row text (cols 0..27)
 		{
 			u16 *map = (u16 *)SUB_BG;
 			int col;
@@ -400,9 +497,9 @@ int cheatlist()
 		if (touched_row >= 4 && touched_row < cheatcount + 4) {
 			int target = touched_row - 4;
 			if (last_x >= 220) {
-				// Open edit panel on touching the right 'E' icon
 				unsigned char raw_type = cheatlistdata[target].type;
 				state = 1;
+				edit_mode = 0;
 				editnum = (unsigned char)target;
 				preadd = cheatlistdata[target].add;
 				preval = cheatlistdata[target].val;
@@ -410,102 +507,191 @@ int cheatlist()
 				pretype = raw_type & ~CHEAT_DISABLED;
 				if (pretype > 2)
 					pretype = 0;
+				normalize_cheat_label(cheatlabels[target], prelabel);
+				menu_stat = 5;
 			} else {
-				// Toggle ON / OFF strictly for the touched row
 				cheatlistdata[target].type ^= CHEAT_DISABLED;
 				menu_stat = 5;
 			}
 		}
 	}
 
-	if(state == 1)  {
-		touchstring mytouch[] = {
-			{64 * 19 + 4,"\x82"},
-			{64 * 19 + 8,"\x82"},
-			{64 * 19 + 12,"\x82"},
-			{64 * 19 + 20,"\x82"},
-			{64 * 19 + 24,"\x82"},
-			{64 * 21 + 4,"\x83"},
-			{64 * 21 + 8,"\x83"},
-			{64 * 21 + 12,"\x83"},
-			{64 * 21 + 20,"\x83"},
-			{64 * 21 + 24,"\x83"},
-			{64 * 20 + 32, "type"},
-			{64 * 20 + 52, "ok"},
-			{64 * 20 + 58, "del"},
-			{-1, 0}
-		};
-		consoletext(64 * 20, "0x      0x          :           ", 0);
-		hex(64 * 20 + 4, preadd >> 8, 0);
-		hex(64 * 20 + 8, preadd >> 4, 0);
-		hex(64 * 20 + 12, preadd, 0);
-		hex(64 * 20 + 20, preval >> 4, 0);
-		hex(64 * 20 + 24, preval, 0);
-		consoletext(64 * 20 + 42, type[pretype], 0);
-		i = do_touchstrings(mytouch, 0);
-		if(touchstate == 4)  {
-			if(i >= 0 && i <= 12)
-				menu_stat = 5;
-			switch(i)  {
-				case 0:
-					preadd += 0x100;
-					break;
-				case 1:
-					preadd += 0x010;
-					break;
-				case 2:
-					preadd += 0x001;
-					break;
-				case 3:
-					preval += 0x10;
-					break;
-				case 4:
-					preval += 0x01;
-					break;
-				case 5:
-					preadd -= 0x100;
-					break;
-				case 6:
-					preadd -= 0x010;
-					break;
-				case 7:
-					preadd -= 0x001;
-					break;
-				case 8:
-					preval -= 0x10;
-					break;
-				case 9:
-					preval -= 0x01;
-					break;
-				case 10:
-					pretype = pretype?0:1;
-					break;
-				case 11:
-					cheatlistdata[editnum].add = preadd;
-					cheatlistdata[editnum].val = preval;
-					cheatlistdata[editnum].type = (pretype ? 1 : 0) | predis;
-					state = 0;
-					break;
-				case 12:	
-					{
-						int k;
-						if (cheatcount > 0 && editnum < cheatcount) {
-							for(k = editnum; k < cheatcount - 1; k++)  {
-								cheatlistdata[k].add = cheatlistdata[k + 1].add;
-								cheatlistdata[k].val = cheatlistdata[k + 1].val;
-								cheatlistdata[k].type = cheatlistdata[k + 1].type;
-							}
-							cheatlistdata[cheatcount - 1].add = 0;
-							cheatlistdata[cheatcount - 1].val = 0;
-							cheatlistdata[cheatcount - 1].type = 0;
-							cheatcount--;
-						}
+	if (state == 1) {
+		if (edit_mode == 0) {
+			touchstring mytouch[] = {
+				{64 * 19 + 4, "\x82"},
+				{64 * 19 + 8, "\x82"},
+				{64 * 19 + 12, "\x82"},
+				{64 * 19 + 20, "\x82"},
+				{64 * 19 + 24, "\x82"},
+				{64 * 21 + 4, "\x83"},
+				{64 * 21 + 8, "\x83"},
+				{64 * 21 + 12, "\x83"},
+				{64 * 21 + 20, "\x83"},
+				{64 * 21 + 24, "\x83"},
+				{64 * 20 + 32, "type"},
+				{64 * 20 + 52, "ok"},
+				{64 * 20 + 58, "del"},
+				{64 * 21 + 42, "V/L"},
+				{-1, 0}
+			};
+			consoletext(64 * 20, "0x      0x          :           ", 0);
+			hex(64 * 20 + 4, preadd >> 8, 0);
+			hex(64 * 20 + 8, preadd >> 4, 0);
+			hex(64 * 20 + 12, preadd, 0);
+			hex(64 * 20 + 20, preval >> 4, 0);
+			hex(64 * 20 + 24, preval, 0);
+			consoletext(64 * 20 + 42, type[pretype], 0);
+			i = do_touchstrings(mytouch, 0);
+			if (touchstate == 4) {
+				if (i >= 0 && i <= 13)
+					menu_stat = 5;
+				switch (i) {
+					case 0:
+						preadd += 0x100;
+						break;
+					case 1:
+						preadd += 0x010;
+						break;
+					case 2:
+						preadd += 0x001;
+						break;
+					case 3:
+						preval += 0x10;
+						break;
+					case 4:
+						preval += 0x01;
+						break;
+					case 5:
+						preadd -= 0x100;
+						break;
+					case 6:
+						preadd -= 0x010;
+						break;
+					case 7:
+						preadd -= 0x001;
+						break;
+					case 8:
+						preval -= 0x10;
+						break;
+					case 9:
+						preval -= 0x01;
+						break;
+					case 10:
+						pretype = pretype ? 0 : 1;
+						break;
+					case 11:
+						cheatlistdata[editnum].add = preadd;
+						cheatlistdata[editnum].val = preval;
+						cheatlistdata[editnum].type = (pretype ? 1 : 0) | predis;
+						normalize_cheat_label(prelabel, cheatlabels[editnum]);
 						state = 0;
-					}
-					break;
+						break;
+					case 12:
+						{
+							int k;
+							if (cheatcount > 0 && editnum < cheatcount) {
+								for (k = editnum; k < cheatcount - 1; k++) {
+									cheatlistdata[k].add = cheatlistdata[k + 1].add;
+									cheatlistdata[k].val = cheatlistdata[k + 1].val;
+									cheatlistdata[k].type = cheatlistdata[k + 1].type;
+									memcpy(cheatlabels[k], cheatlabels[k + 1], CHEAT_LABEL_LEN + 1);
+								}
+								cheatlistdata[cheatcount - 1].add = 0;
+								cheatlistdata[cheatcount - 1].val = 0;
+								cheatlistdata[cheatcount - 1].type = 0;
+								normalize_cheat_label(NULL, cheatlabels[cheatcount - 1]);
+								cheatcount--;
+							}
+							state = 0;
+						}
+						break;
+					case 13:
+						edit_mode = 1;
+						break;
+				}
+				preval &= 0xFF;
+				preadd &= 0x7FF;
 			}
-			preval &= 0xFF;
-			preadd &= 0x7FF;
+		} else {
+			static int cursor_pos = 0;
+			touchstring labeltouch[] = {
+				{64 * 19 + 36, "\x82"},
+				{64 * 21 + 36, "\x83"},
+				{64 * 20 + 52, "ok"},
+				{64 * 20 + 58, "del"},
+				{64 * 21 + 42, "V/L"},
+				{-1, 0}
+			};
+			if (cursor_pos < 0 || cursor_pos >= CHEAT_LABEL_LEN)
+				cursor_pos = 0;
+
+			consoletext(64 * 20, "                                ", 0);
+			consoletext(64 * 20, prelabel, 0);
+			// Draw 15-char underline guide on row 21 (cols 0..14)
+			consoletext(64 * 21, "---------------", 0x2000);
+			// Highlight currently selected character and its underline marker in yellow (0x1000)
+			{
+				u16 *map = (u16 *)SUB_BG;
+				int row_text = 32 * 20;
+				int row_line = 32 * 21;
+				map[row_text + cursor_pos] = (map[row_text + cursor_pos] & 0x0FFF) | 0x1000;
+				map[row_line + cursor_pos] = (map[row_line + cursor_pos] & 0x0FFF) | 0x1000;
+			}
+
+			i = do_touchstrings(labeltouch, 0);
+			if (touchstate == 4) {
+				if (i >= 0 && i <= 4) {
+					menu_stat = 5;
+					switch (i) {
+						case 0: // Up arrow
+							prelabel[cursor_pos] = step_label_char(prelabel[cursor_pos], 1);
+							break;
+						case 1: // Down arrow
+							prelabel[cursor_pos] = step_label_char(prelabel[cursor_pos], -1);
+							break;
+						case 2: // ok
+							cheatlistdata[editnum].add = preadd;
+							cheatlistdata[editnum].val = preval;
+							cheatlistdata[editnum].type = (pretype ? 1 : 0) | predis;
+							normalize_cheat_label(prelabel, cheatlabels[editnum]);
+							cursor_pos = 0;
+							state = 0;
+							break;
+						case 3: // del
+							{
+								int k;
+								if (cheatcount > 0 && editnum < cheatcount) {
+									for (k = editnum; k < cheatcount - 1; k++) {
+										cheatlistdata[k].add = cheatlistdata[k + 1].add;
+										cheatlistdata[k].val = cheatlistdata[k + 1].val;
+										cheatlistdata[k].type = cheatlistdata[k + 1].type;
+										memcpy(cheatlabels[k], cheatlabels[k + 1], CHEAT_LABEL_LEN + 1);
+									}
+									cheatlistdata[cheatcount - 1].add = 0;
+									cheatlistdata[cheatcount - 1].val = 0;
+									cheatlistdata[cheatcount - 1].type = 0;
+									normalize_cheat_label(NULL, cheatlabels[cheatcount - 1]);
+									cheatcount--;
+								}
+								cursor_pos = 0;
+								state = 0;
+							}
+							break;
+						case 4: // V/L
+							edit_mode = 0;
+							break;
+					}
+				} else {
+					// Touch directly on any of the 15 label characters (row 19..21, cols 0..14) to move cursor
+					int trow = last_y / 8;
+					int tcol = last_x / 8;
+					if (trow >= 19 && trow <= 21 && tcol >= 0 && tcol < CHEAT_LABEL_LEN) {
+						cursor_pos = tcol;
+						menu_stat = 5;
+					}
+				}
+			}
 		}
 	} else {
 		touchstring mytouch[] = {
@@ -514,13 +700,14 @@ int cheatlist()
 		};
 		i = do_touchstrings(mytouch, 0);
 		if (touchstate == 4) {
-			switch(i) {
-				case 0:	//add new one
-					if(cheatcount < 14) {
+			switch (i) {
+				case 0:
+					if (cheatcount < 14) {
 						cheatlistdata[cheatcount].add = 0;
 						cheatlistdata[cheatcount].val = 0;
 						cheatlistdata[cheatcount].type = 2 | CHEAT_DISABLED;
-						cheatcount ++;
+						normalize_cheat_label(NULL, cheatlabels[cheatcount]);
+						cheatcount++;
 					}
 					menu_stat = 5;
 					break;
@@ -529,9 +716,6 @@ int cheatlist()
 	}
 	return 0;
 }
-
-
-// do the cheat in the main loop
 
 int do_cheat()
 {
