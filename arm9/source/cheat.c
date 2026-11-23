@@ -248,20 +248,21 @@ void save_cheat(void)
 		unsigned char raw_type = cheatlistdata[i].type;
 		const char *type_str = ((raw_type & ~0x80) == 0) ? "fix" : "once";
 		const char *state_str = (raw_type & 0x80) ? "off" : "on";
-		if (is_cheat_label_empty(cheatlabels[i])) {
-			fprintf(f, "%03X:%02X:%s:%s:\n",
-				cheatlistdata[i].add & 0x7FF,
-				cheatlistdata[i].val & 0xFF,
-				type_str,
-				state_str);
-		} else {
-			fprintf(f, "%03X:%02X:%s:%s:%s\n",
-				cheatlistdata[i].add & 0x7FF,
-				cheatlistdata[i].val & 0xFF,
-				type_str,
-				state_str,
-				cheatlabels[i]);
+		char trimmed_label[CHEAT_LABEL_LEN + 1];
+		int len = CHEAT_LABEL_LEN;
+
+		memcpy(trimmed_label, cheatlabels[i], CHEAT_LABEL_LEN);
+		while (len > 0 && (trimmed_label[len - 1] == ' ' || trimmed_label[len - 1] == '\0')) {
+			len--;
 		}
+		trimmed_label[len] = '\0';
+
+		fprintf(f, "%03X:%02X:%s:%s:%s\n",
+			cheatlistdata[i].add & 0x7FF,
+			cheatlistdata[i].val & 0xFF,
+			type_str,
+			state_str,
+			trimmed_label);
 	}
 	fflush(f);
 	fclose(f);
