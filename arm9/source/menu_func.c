@@ -55,10 +55,27 @@ void menu_file_loadrom(void)
 	do_rommenu();
 }
 
+
+extern int check_savestate_status(int num);
+
+static void refresh_slot_display(void)
+{
+	int st = check_savestate_status(slots_num);
+	const char *label = "empty  ";
+	if (st == 1)
+		label = "in used";
+	else if (st == 2)
+		label = "invalid";
+
+	hex8(64*18 + 4 + 10, slots_num);
+	consoletext(64*18 + 4 + 16, label, 0);
+}
+
 void menu_file_savestate(void)
 {
 	menu_stat = 3;
 	write_savestate(slots_num);
+	refresh_slot_display();
 }
 
 void menu_file_loadstate(void)
@@ -84,7 +101,7 @@ void menu_file_slot(void)
 			slots_num = 9;
 		if (slots_num > 9)
 			slots_num = 0;
-		hex8(64*18 + 4 + 10, slots_num);
+		refresh_slot_display();
 	}
 	menu_stat = 3;
 }
@@ -95,7 +112,7 @@ void menu_file_start(void)
 	consoletext(64*11 + 4 + 10, (__emuflags & AUTOSRAM) ? "Auto" : "Manual" , 0);
 
 	consoletext(64*18 + 4, "Slot:", 0);
-	hex8(64*18 + 4 + 10, slots_num);
+	refresh_slot_display();
 }
 
 void menu_game_start(void)

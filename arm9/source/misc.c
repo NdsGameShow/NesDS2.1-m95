@@ -242,6 +242,48 @@ void save_sram() {
 	irqEnable(IRQ_VBLANK);
 }
 
+#define SAVESTATE_MAGIC "M95_SS01"
+#define SAVESTATE_MAGIC_LEN 8
+
+int check_savestate_status(int num) {
+	extern int Sound_pause(void);
+	extern int Sound_resume(void);
+	FILE *f;
+	char magic[SAVESTATE_MAGIC_LEN];
+	int extra;
+	int status = 0; // 0: empty, 1: in used, 2: invalid
+
+	if (!active_interface || num > 9 || num < 0)
+		return 0;
+
+	(void)Sound_pause();
+	enter_save_context();
+
+	romfileext = strrchr(romfilename, '.') + 1;
+	romfileext[0] = 's';
+	romfileext[1] = 's';
+	romfileext[2] = '0' + num;
+	romfileext[3] = 0;
+
+	f = fopen(romfilename, "rb");
+	if (f) {
+		status = 2; // File exists -> default to invalid until magic matches
+		if (fseek(f, SAVESTATESIZE, SEEK_SET) == 0) {
+			if (fread(magic, 1, SAVESTATE_MAGIC_LEN, f) == SAVESTATE_MAGIC_LEN &&
+			    memcmp(magic, SAVESTATE_MAGIC, SAVESTATE_MAGIC_LEN) == 0) {
+				extra = fgetc(f);
+				if (extra == EOF)
+					status = 1; // Valid savestate
+			}
+		}
+		fclose(f);
+	}
+
+	leave_save_context();
+	(void)Sound_resume();
+	return status;
+}
+
 /*****************************
 * name:			write_savestate
 * function:		write realtime saving to xxxnes.ss.
@@ -266,12 +308,14 @@ void write_savestate(int num) {
 	romfileext[0] = 's';
 	romfileext[1] = 's';
 	romfileext[2] = '0' + num;
+	romfileext[3] = 0;
 	savestate((u32)p);
-	f = fopen(romfilename,"w");
+	f = fopen(romfilename,"wb");
 	if (f) {
-		fwrite(p,1,SAVESTATESIZE,f);
+		fwrite(p, 1, SAVESTATESIZE, f);
+		fwrite(SAVESTATE_MAGIC, 1, SAVESTATE_MAGIC_LEN, f);
 		fflush(f);
-		fclose(f);						//something maybe lost if we shutdown our DS immi...
+		fclose(f);
 		recorder_reset();
 	}
 	leave_save_context();
@@ -290,6 +334,7 @@ void read_savestate(int num) {
 	extern int Sound_reset(void);
 	FILE *f;
 	int i;
+	char magic[SAVESTATE_MAGIC_LEN];
 	u8 *p = (u8*)freemem_start;
 
 	if (!active_interface) return;
@@ -300,25 +345,30 @@ void read_savestate(int num) {
 	(void)Sound_pause();
 	enter_save_context();
 
-	romfileext = strrchr(romfilename,'.')+1;		//make sure everything is ok...
+	romfileext = strrchr(romfilename,'.')+1;//make sure everything is ok...
 	romfileext[0] = 's';
 	romfileext[1] = 's';
 	romfileext[2] = '0' + num;
+	romfileext[3] = 0;
 
-	f = fopen(romfilename,"r");
+	f = fopen(romfilename,"rb");
 	if (f) {
-		i = fread(p,1,SAVESTATESIZE,f);
-		fclose(f);
-		if (i == SAVESTATESIZE)
+		i = fread(p, 1, SAVESTATESIZE, f);
+		if (i == SAVESTATESIZE &&
+		    fread(magic, 1, SAVESTATE_MAGIC_LEN, f) == SAVESTATE_MAGIC_LEN &&
+		    memcmp(magic, SAVESTATE_MAGIC, SAVESTATE_MAGIC_LEN) == 0 &&
+		    fgetc(f) == EOF) {
+			fclose(f);
 			loadstate((u32)p);
-		recorder_reset();
+			recorder_reset();
+		} else {
+			fclose(f);
+		}
 	}
 	leave_save_context();
 	(void)Sound_reset();
 	(void)Sound_resume();
 }
-
-
 
 /*****************************
 * name:			do_shortcuts
