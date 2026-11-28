@@ -41,6 +41,7 @@ A custom fork of **NesDS 2.1** (`DS-Homebrew/NesDS`) adding **iNES Mapper 95 (NA
 * **Smooth ROM Loading Transition**: Blanks screen brightness during `FILE > Load ROM` to eliminate visual artifacts.
 * **Audio Sync During File I/O**: Cleanly pauses and resumes ARM7 audio during save state, cheat, and `.ini` file operations to prevent crackling or dropouts.
 * **melonDS Compatibility & ROM Browser Fixes**: Added `IRQ_VBLANK` support, optimized directory scanning (`d_type` & macOS dotfile filtering) for **melonDS** ROM browser stability, and updated `clearconsole()` to clear lower screen artifacts.
+* **Save State Slot Status & Compatibility Guard**: Displays whether the selected save state slot (`Slot: xx`) is **`in used`**, **`empty`**, or **`invalid`** in `Menu > FILE`, and embeds a signature (`M95_SS01`) in `.ss0`–`.ss9` files. **Note: Save states (`.ss0`–`.ss9`) are not compatible with earlier versions (`v2.1-m95j` and older, or original NesDS 2.1)**; legacy save files will be shown as `invalid` and safely blocked from loading to prevent screen corruption or hangs. (Standard battery-backed `.sav` files remain 100% compatible.)
 
 
 ---
@@ -87,6 +88,7 @@ A custom fork of **NesDS 2.1** (`DS-Homebrew/NesDS`) adding **iNES Mapper 95 (NA
 * **ROM 切り替え時の画面遷移改善**: `FILE > Load ROM` 実行時に画面の輝度遮光を行い、切り替え時の残像や乱れを抑えました。
 * **ファイルアクセス時の音割れ防止**: ステート・チート・`.ini` の保存／読み込み時に ARM7 音声を一時停止・同期再開することでノイズや音割れを防止しました。
 * **melonDS 対応・ROM ブラウザと下画面表示の改善**: `IRQ_VBLANK` の有効化とディレクトリ走査の最適化（`d_type` 活用および macOS 隠しファイルの除外）により、**melonDS** 上でもファイルリストがハングせず正常に動作するようになりました。あわせて `clearconsole()` のクリア範囲修正により、ROM ロード後の下画面のゴミ表示も解消しています。
+* **ステートスロット使用状況表示と非互換ステート保護**: `Menu > FILE` の `Slot: xx` の横に現在のスロット状態（**`in used`** / **`empty`** / **`invalid`**）を表示し、ステートファイル（`.ss0`〜`.ss9`）に識別シグネチャ（`M95_SS01`）を付与しました。**※以前のバージョン（`v2.1-m95j` 以前やオリジナル版 NesDS 2.1）で作成したステートセーブ（`.ss0`〜`.ss9`）とは互換性がありません。** 旧バージョンのステートファイルは `invalid` と表示され、画面崩れやハングを防ぐためロードがブロックされます（通常のバッテリーバックアップ `.sav` ファイルは引き続き100%互換性があります）。
 
 
 ---
